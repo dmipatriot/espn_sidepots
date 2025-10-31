@@ -1,0 +1,14 @@
+league_id: 123456
+season: 2025
+regular_season_weeks: 14
+survivor_start_week: 3
+pir_target: 150.0
+tiebreaks:
+  pir: ["earliest_week","higher_bench","alphabetical"]
+  efficiency: ["higher_median","higher_total_points","alphabetical"]
+  survivor: ["lower_season_eff","lower_total_points","alphabetical"]
+webhooks:
+  pir: WEBHOOK_PIR
+  efficiency: WEBHOOK_EFFICIENCY
+  survivor: WEBHOOK_SURVIVOR
+timezone: America/Chicago
