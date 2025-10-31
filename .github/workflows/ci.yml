@@ -9,6 +9,6 @@ jobs:
         with: { python-version: '3.11' }
       - run: pip install -r requirements.txt
       - run: pip install pytest pytest-cov mypy flake8
-      - run: pytest -q
+      - run: PYTHONPATH=. python -m pytest -q
       - run: flake8 app || true
       - run: mypy app || true
