@@ -77,17 +77,36 @@ def _maybe_post(cfg: Dict[str, object], key: str, title: str, lines: List[str], 
     discord.post_text(cfg, key, title, lines)
 
 
+def _get_int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    try:
+        return int(value) if value else default
+    except ValueError:
+        return default
+
+
 def main() -> None:
     """Entry point for the CLI application."""
 
     cfg = load_config()
     args = parse_args()
 
-    espn_s2 = os.getenv("ESPN_S2", "")
-    swid = os.getenv("SWID", "")
+    league_id = _get_int_env("LEAGUE_ID", int(cfg.get("league_id")))
+    season = _get_int_env("SEASON", int(cfg.get("season")))
+    espn_s2 = os.getenv("ESPN_S2") or cfg.get("espn_s2", "")
+    swid = os.getenv("SWID") or cfg.get("swid", "")
+
+    def _tail(value: str) -> str:
+        return value[-6:] if value else ""
+
+    print(
+        f"[cfg] league_id={league_id} season={season} "
+        f"s2=*...{_tail(espn_s2)} swid=*...{_tail(swid)}"
+    )
+
     league = get_league(
-        league_id=int(cfg["league_id"]),
-        season=int(cfg["season"]),
+        league_id=league_id,
+        season=season,
         espn_s2=espn_s2,
         swid=swid,
     )
