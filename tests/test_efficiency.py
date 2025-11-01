@@ -11,7 +11,7 @@ from app.espn_client import TeamWeekScore
 
 def test_update_efficiency_streaming_totals():
     stats: dict[int, EffStat] = {}
-    dedupe_seen: set[tuple[int, int]] = set()
+    seen_pairs: set[tuple[int, int]] = set()
     labels = {
         1: "Team One",
         2: "Team Two",
@@ -30,8 +30,8 @@ def test_update_efficiency_streaming_totals():
         TeamWeekScore(team_id=3, owner="Three", week=2, points=70.0, optimal_points=140.0),
     ]
 
-    update_efficiency(stats, week_one, dedupe_seen=dedupe_seen)
-    update_efficiency(stats, week_two, dedupe_seen=dedupe_seen)
+    update_efficiency(stats, week_one, seen=seen_pairs)
+    update_efficiency(stats, week_two, seen=seen_pairs)
 
     assert stats[1].actual_sum == 195.0
     assert stats[1].optimal_sum == 225.0

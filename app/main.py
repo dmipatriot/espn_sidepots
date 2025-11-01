@@ -22,6 +22,7 @@ from app.espn_client import (
     fetch_teams,
     fetch_week_scores,
     get_weeks,
+    init_league,
     label_for,
     last_completed_week,
     preflight_league,
@@ -214,6 +215,7 @@ def main() -> None:
         regular_weeks = int(
             cfg.get("regular_season_weeks") or rules.get("regular_season_weeks") or 0
         )
+        league = init_league(client)
         lcw = last_completed_week(client, start_week=1)
         weeks = get_weeks(args.weeks, regular_weeks, last_completed=lcw)
 
@@ -227,13 +229,13 @@ def main() -> None:
         need_payload = any(mode in modes for mode in ("pir", "survivor"))
 
         for week in weeks:
-            week_scores = fetch_week_scores(client, week, league_rules=rules)
+            week_scores = fetch_week_scores(league, week)
             week_payload = [asdict(team_score) for team_score in week_scores]
             if need_payload:
                 payload.extend(week_payload)
 
             if "efficiency" in modes:
-                update_efficiency(stats, week_scores, dedupe_seen=dedupe_seen)
+                update_efficiency(stats, week_scores, seen=dedupe_seen)
 
         scoring_df = None
         if need_payload:

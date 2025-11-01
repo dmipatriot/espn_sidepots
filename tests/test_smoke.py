@@ -46,7 +46,9 @@ def test_main_smoke(monkeypatch, tmp_path):
     monkeypatch.setattr(
         main, "build_team_label_map", lambda *_args, **_kwargs: {}
     )
-    monkeypatch.setattr(main, "fetch_week_scores", lambda *_args, **_kwargs: [])
+    fake_league = object()
+    monkeypatch.setattr(main, "init_league", lambda _client: fake_league)
+    monkeypatch.setattr(main, "fetch_week_scores", lambda league, *_args, **_kwargs: [] if league is fake_league else [])
     monkeypatch.setattr(main, "build_base_frame", lambda payload: payload)
     monkeypatch.setattr(main, "add_optimal_points", lambda base, _rules: base)
     monkeypatch.setattr(main, "compute_pir", lambda *_args, **_kwargs: {"leaderboard_df": _EmptyFrame()})
