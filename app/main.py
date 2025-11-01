@@ -200,10 +200,10 @@ def main() -> None:
 
         settings_payload = fetch_settings(client)
         teams_payload = fetch_teams(client)
-        members = build_member_display_map(settings_payload)
+        member_map = build_member_display_map(settings_payload)
         labels = build_team_label_map(
             teams_payload,
-            settings_payload,
+            member_map,
             include_owner=True,
         )
         rules = extract_league_rules(client, settings_payload)

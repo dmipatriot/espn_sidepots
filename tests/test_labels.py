@@ -43,9 +43,33 @@ TEAMS_FIXTURE = {
             "owners": ["GUID-AAA-0001"],
         },
         {
-            "teamId": 2,
-            "abbrev": "SWF",
+            "id": 2,
+            "name": "Spoony Squad",
             "owners": ["GUID-BBB-0002"],
+        },
+    ]
+}
+
+
+BASIC_SETTINGS = {
+    "members": [
+        {"id": "ABC", "displayName": "Kenny Thorson"},
+    ]
+}
+
+
+BASIC_TEAMS = {
+    "teams": [
+        {
+            "id": 7,
+            "location": "Iowa",
+            "nickname": "Ironclads",
+            "owners": ["ABC"],
+        },
+        {
+            "id": 12,
+            "name": "Spoony Squad",
+            "owners": ["ABC"],
         },
     ]
 }
@@ -57,14 +81,24 @@ def test_build_member_display_map_preference_chain():
     assert members["GUID-AAA-0001"] == "Kenny Thorson"
     assert members["GUID-BBB-0002"] == "Taylor Swift"
     assert members["GUID-CCC-0003"] == "alt-handle"
-    assert members["deadbeef-0004"] == "deadbe"
+    assert members["deadbeef-0004"] == "DEADBE"
 
 
 def test_build_team_label_map_uses_location_and_owner():
-    labels = build_team_label_map(TEAMS_FIXTURE, SETTINGS_FIXTURE)
+    member_map = build_member_display_map(SETTINGS_FIXTURE)
+    labels = build_team_label_map(TEAMS_FIXTURE, member_map)
 
     assert labels[1] == "Iowa Ironclads (Kenny Thorson)"
-    assert labels[2] == "SWF (Taylor Swift)"
+    assert labels[2] == "Spoony Squad (Taylor Swift)"
+
+
+def test_basic_fixture_matches_expected_labels():
+    member_map = build_member_display_map(BASIC_SETTINGS)
+    labels = build_team_label_map(BASIC_TEAMS, member_map)
+
+    assert member_map["ABC"] == "Kenny Thorson"
+    assert labels[7] == "Iowa Ironclads (Kenny Thorson)"
+    assert labels[12] == "Spoony Squad (Kenny Thorson)"
 
 
 def test_survivor_summary_uses_labels():
@@ -88,7 +122,8 @@ def test_survivor_summary_uses_labels():
             },
         ]
     )
-    labels = build_team_label_map(TEAMS_FIXTURE, SETTINGS_FIXTURE)
+    member_map = build_member_display_map(SETTINGS_FIXTURE)
+    labels = build_team_label_map(TEAMS_FIXTURE, member_map)
 
     result = run_survivor(df, start_week=1, weeks_scope=[1], labels=labels)
 
