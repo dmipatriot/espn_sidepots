@@ -1,67 +1,38 @@
 from __future__ import annotations
-from typing import Dict, Iterable, List, Tuple
 
-import pandas as pd
+from dataclasses import dataclass
+from typing import Dict, List
 
-from app.espn_client import label_for
-
-def _apply_efficiency_tiebreaks(
-    df: pd.DataFrame,
-    tiebreaks: Iterable[str] | None,
-    base_sort: List[Tuple[str, bool]],
-) -> pd.DataFrame:
-    sort_columns: List[str] = [col for col, _ in base_sort]
-    ascending: List[bool] = [asc for _, asc in base_sort]
-
-    rule_map: Dict[str, Tuple[str, bool]] = {
-        "higher_median": ("median_efficiency", False),
-        "higher_total_points": ("total_points", False),
-        "lower_total_points": ("total_points", True),
-        "alphabetical": ("owner", True),
-    }
-
-    for rule in tiebreaks or []:
-        if rule not in rule_map:
-            continue
-        column, asc = rule_map[rule]
-        sort_columns.append(column)
-        ascending.append(asc)
-
-    return df.sort_values(sort_columns, ascending=ascending, kind="mergesort")
+from app.espn_client import TeamWeekScore
 
 
-def season_efficiency(
-    df: pd.DataFrame,
-    weeks: List[int],
-    *,
-    tiebreaks: List[str] | None = None,
-    labels: Dict[int, str],
-) -> Dict[str, Any]:
-    """Aggregate weekly efficiency into season-long leaderboards."""
+@dataclass
+class EffStat:
+    team_id: int
+    actual_sum: float = 0.0
+    optimal_sum: float = 0.0
+    weeks: int = 0
 
-    subset = df[df["week"].isin(weeks)].copy()
-    if subset.empty:
-        empty = pd.DataFrame()
-        return {"table": empty, "top_df": empty, "bottom_df": empty}
+    @property
+    def efficiency(self) -> float:
+        return (self.actual_sum / self.optimal_sum) if self.optimal_sum > 0 else 0.0
 
-    grouped = subset.groupby(["team_id", "owner"], as_index=False).agg(
-        games_played=("week", "nunique"),
-        total_points=("points", "sum"),
-        total_optimal=("optimal_points", "sum"),
-        mean_efficiency=("efficiency", "mean"),
-        median_efficiency=("efficiency", "median"),
-    )
-    grouped["owner"] = grouped["team_id"].apply(
-        lambda tid: label_for(int(tid), labels)
-    )
-    grouped["season_efficiency"] = grouped["mean_efficiency"]
 
-    ordered = _apply_efficiency_tiebreaks(
-        grouped,
-        tiebreaks,
-        base_sort=[("season_efficiency", False), ("games_played", False)],
-    ).reset_index(drop=True)
+def update_efficiency(stats: Dict[int, EffStat], week_scores: List[TeamWeekScore]) -> None:
+    for score in week_scores:
+        entry = stats.setdefault(score.team_id, EffStat(team_id=score.team_id))
+        entry.actual_sum += float(score.points or 0.0)
+        entry.optimal_sum += float(score.optimal_points or 0.0)
+        entry.weeks += 1
 
-    top_df = ordered.head(3)
-    bottom_df = ordered.tail(3)
-    return {"table": ordered, "top_df": top_df, "bottom_df": bottom_df}
+
+def format_efficiency_report(labels: Dict[int, str], stats: Dict[int, EffStat]) -> str:
+    rows = sorted(stats.values(), key=lambda stat: stat.efficiency, reverse=True)
+    lines = ["Season Efficiency"]
+    for entry in rows:
+        name = labels.get(entry.team_id, f"Team {entry.team_id}")
+        lines.append(
+            f"{name}: Actual {entry.actual_sum:.1f} | Optimal {entry.optimal_sum:.1f} | Eff {entry.efficiency*100:.2f}%"
+        )
+    return "\n".join(lines)
+

@@ -191,6 +191,7 @@ class TeamWeekScore:
     bench_points: float | None = None
     roster: List[Dict[str, Any]] | None = None
     raw: Dict[str, Any] | None = None
+    optimal_points: float | None = None
 
 
 def _apply_client_context(client: ESPNClient) -> Dict[str, str]:

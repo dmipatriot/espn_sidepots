@@ -8,7 +8,6 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app.efficiency import season_efficiency
 from app.pir import compute_pir
 from app.scoring import add_optimal_points, build_base_frame
 from app.survivor import run_survivor
@@ -77,43 +76,6 @@ def test_price_is_right_tiebreaks():
     assert result["leader"]["owner"] == "Bob"
     leaderboard = result["leaderboard_df"]
     assert list(leaderboard["owner"]) == ["Bob", "Alice", "Cara"]
-
-
-def test_efficiency_tiebreak_chain():
-    rows = []
-    for week, effs in enumerate([(1.0, 0.95), (0.8, 0.95), (0.9, 0.8)], start=1):
-        team_a_eff, team_b_eff = effs
-        rows.append(
-            {
-                "team_id": 1,
-                "owner": "Alpha",
-                "week": week,
-                "points": team_a_eff * 100,
-                "optimal_points": 100.0,
-                "efficiency": team_a_eff,
-            }
-        )
-        rows.append(
-            {
-                "team_id": 2,
-                "owner": "Beta",
-                "week": week,
-                "points": team_b_eff * 100,
-                "optimal_points": 100.0,
-                "efficiency": team_b_eff,
-            }
-        )
-    df = pd.DataFrame(rows)
-    labels = {1: "Alpha", 2: "Beta"}
-    result = season_efficiency(
-        df,
-        weeks=[1, 2, 3],
-        tiebreaks=["higher_median", "higher_total_points", "alphabetical"],
-        labels=labels,
-    )
-    table = result["table"]
-    assert table.iloc[0]["owner"] == "Beta"
-    assert pytest.approx(table.iloc[0]["season_efficiency"], rel=1e-6) == pytest.approx(table.iloc[1]["season_efficiency"], rel=1e-6)
 
 
 def test_survivor_elimination_with_tiebreaks():
