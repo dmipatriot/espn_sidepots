@@ -4,13 +4,15 @@ import os
 import time
 from dataclasses import dataclass
 from json import JSONDecodeError
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Set
 
 import logging
 
 import requests
 
 from espn_api.football.constant import POSITION_MAP
+
+from app.scoring import compute_optimal_points
 
 _DEFAULT_HEADERS = {
     "User-Agent": (
@@ -191,7 +193,7 @@ class TeamWeekScore:
     bench_points: float | None = None
     roster: List[Dict[str, Any]] | None = None
     raw: Dict[str, Any] | None = None
-    optimal_points: float | None = None
+    optimal_points: float = 0.0
 
 
 def _apply_client_context(client: ESPNClient) -> Dict[str, str]:
@@ -381,12 +383,18 @@ def get_weeks(
     return _validate([week])
 
 
-def fetch_week_scores(client: ESPNClient, week: int) -> List[TeamWeekScore]:
+def fetch_week_scores(
+    client: ESPNClient,
+    week: int,
+    *,
+    league_rules: Dict[str, Any] | None = None,
+) -> List[TeamWeekScore]:
     """Return per-team scoring for a specific week using ESPN JSON endpoints."""
 
     teams_payload = fetch_teams(client)
     matchups_payload = fetch_week_matchups(client, week)
     rosters_payload = fetch_week_rosters(client, week)
+    rules = league_rules or {}
 
     teams_by_id: Dict[int, Dict[str, Any]] = {}
     for team in teams_payload.get("teams", []) or []:
@@ -478,6 +486,7 @@ def fetch_week_scores(client: ESPNClient, week: int) -> List[TeamWeekScore]:
         return f"Team {team_id}"
 
     results: List[TeamWeekScore] = []
+    seen: Set[int] = set()
     for matchup in matchups_payload.get("schedule", []) or []:
         matchup_week = int(matchup.get("matchupPeriodId", week) or week)
         if matchup_week != int(week):
@@ -490,6 +499,9 @@ def fetch_week_scores(client: ESPNClient, week: int) -> List[TeamWeekScore]:
             if team_id is None:
                 continue
             team_id = int(team_id)
+            if team_id in seen:
+                continue
+            seen.add(team_id)
             points = float(
                 team_info.get("totalPoints")
                 or team_info.get("points", 0.0)
@@ -502,6 +514,12 @@ def fetch_week_scores(client: ESPNClient, week: int) -> List[TeamWeekScore]:
                     entry["points"] for entry in roster if entry["slot"] in BENCH_SLOTS
                 )
 
+            optimal_points = compute_optimal_points(
+                roster or [],
+                rules,
+                actual_points=points,
+            )
+
             results.append(
                 TeamWeekScore(
                     team_id=team_id,
@@ -511,6 +529,7 @@ def fetch_week_scores(client: ESPNClient, week: int) -> List[TeamWeekScore]:
                     bench_points=bench_points,
                     roster=roster,
                     raw={"matchup_id": matchup.get("id"), "side": side},
+                    optimal_points=optimal_points,
                 )
             )
 

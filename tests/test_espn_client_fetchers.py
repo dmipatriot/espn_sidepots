@@ -164,6 +164,7 @@ def test_fetch_week_scores_uses_first_party_http(sample_client):
         assert score.points > 0
         assert score.owner.startswith("Owner")
         assert score.roster
+        assert score.optimal_points >= score.points
 
     team_ids = {score.team_id for score in scores}
     assert team_ids == {1, 2}
