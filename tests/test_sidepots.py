@@ -148,6 +148,7 @@ def test_survivor_elimination_with_tiebreaks():
         start_week=2,
         tiebreaks=["lower_season_eff", "lower_total_points", "alphabetical"],
         weeks_scope=[1, 2, 3],
+        last_completed_week=3,
         labels=labels,
     )
     eliminated = result["eliminated_order"]
@@ -171,6 +172,7 @@ def test_survivor_handles_missing_weeks():
         start_week=2,
         tiebreaks=["lower_total_points", "alphabetical"],
         weeks_scope=[1, 2],
+        last_completed_week=2,
         labels=labels,
     )
     assert result["eliminated_order"][0]["owner"] == "Alpha"

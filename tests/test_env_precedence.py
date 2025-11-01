@@ -52,7 +52,7 @@ def test_env_overrides_yaml_for_league_and_season(monkeypatch, tmp_path):
     monkeypatch.setattr(
         main, "extract_league_rules", lambda _client, *_args, **_kwargs: {"regular_season_weeks": 14}
     )
-    monkeypatch.setattr(main, "last_completed_week", lambda _client: 1)
+    monkeypatch.setattr(main, "last_completed_week", lambda _client, **_kwargs: 1)
     monkeypatch.setattr(main, "get_weeks", lambda *_args, **_kwargs: [1])
     monkeypatch.setattr(main, "fetch_teams", lambda *_args, **_kwargs: {"teams": []})
     monkeypatch.setattr(

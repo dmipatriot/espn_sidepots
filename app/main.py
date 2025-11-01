@@ -80,13 +80,28 @@ def _format_efficiency_summary(result: Dict[str, object], labels: Dict[int, str]
     return lines or ["No efficiency data"]
 
 
-def _format_survivor_summary(result: Dict[str, object], labels: Dict[int, str]) -> List[str]:
-    lines = result["summary"][:5]
-    alive = result["alive"]
+def _format_survivor_summary(
+    result: Dict[str, object], labels: Dict[int, str], last_completed_week: int | None
+) -> List[str]:
+    lines: List[str] = list(result.get("summary", []))
+    display = lines[:5]
+    if last_completed_week is not None:
+        target_prefix = f"Week {last_completed_week}:"
+        latest_line = next(
+            (line for line in reversed(lines) if line.startswith(target_prefix)),
+            None,
+        )
+        if latest_line and latest_line not in display:
+            if len(display) >= 5:
+                display[-1] = latest_line
+            else:
+                display.append(latest_line)
+
+    alive = result.get("alive", [])
     if alive:
         alive_labels = [label_for(int(team), labels) for team in alive]
-        lines.append("Alive: " + ", ".join(alive_labels))
-    return lines or ["No eliminations yet"]
+        display.append("Alive: " + ", ".join(alive_labels))
+    return display or ["No eliminations yet"]
 
 
 def _format_weeks_for_log(weeks: List[int]) -> str:
@@ -210,8 +225,8 @@ def main() -> None:
         regular_weeks = int(
             cfg.get("regular_season_weeks") or rules.get("regular_season_weeks") or 0
         )
-        completed = last_completed_week(client)
-        weeks = get_weeks(args.weeks, regular_weeks, last_completed=completed)
+        lcw = last_completed_week(client, start_week=1)
+        weeks = get_weeks(args.weeks, regular_weeks, last_completed=lcw)
 
         payload: List[Dict[str, object]] = []
         for week in weeks:
@@ -268,13 +283,14 @@ def main() -> None:
                 start_week=int(cfg.get("survivor_start_week", 1)),
                 tiebreaks=list((cfg.get("tiebreaks") or {}).get("survivor", [])),
                 weeks_scope=weeks,
+                last_completed_week=lcw,
                 labels=labels,
             )
             posted = _maybe_post(
                 cfg,
                 "survivor",
                 "Survivor Pool",
-                _format_survivor_summary(survivor_result, labels),
+                _format_survivor_summary(survivor_result, labels, lcw),
                 args.dry_run,
             )
             if posted:
