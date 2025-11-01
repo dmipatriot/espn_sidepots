@@ -150,6 +150,14 @@ def main() -> None:
         swid = os.getenv("SWID") or cfg.get("swid", "")
 
         LOGGER.info(
+            "Starting run mode=%s weeks=%s league_id=%s season=%s",
+            args.mode,
+            args.weeks,
+            league_id,
+            season,
+        )
+
+        LOGGER.info(
             "Credentials: league_id=%s season=%s espn_s2=%s swid=%s",
             league_id,
             season,
@@ -163,7 +171,7 @@ def main() -> None:
             espn_s2=espn_s2,
             swid=swid,
         )
-        LOGGER.info("preflight OK (200)")
+        LOGGER.info("[preflight] OK (JSON)")
 
         league = get_league(
             league_id=league_id,

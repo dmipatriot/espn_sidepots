@@ -1,6 +1,8 @@
 from __future__ import annotations
+import os
 import time
 from dataclasses import dataclass
+from json import JSONDecodeError
 from typing import Any, Dict, Iterable, List
 
 import requests
@@ -8,14 +10,68 @@ import requests
 from espn_api.football.constant import POSITION_MAP
 from espn_api.football.league import League
 
-JSON_HEADERS = {
+_DEFAULT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
     ),
-    "Accept": "application/json",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://fantasy.espn.com/",
+    "Origin": "https://fantasy.espn.com",
+    "Cache-Control": "no-cache",
 }
+
+_SESSION = requests.Session()
+_SESSION.headers.update(_DEFAULT_HEADERS)
+
+_LEAGUE_CONTEXT: Dict[str, int] | None = None
+
+_PRIMARY_HOST = ("fantasy", "https://fantasy.espn.com")
+_ALT_HOST = ("lm-api-reads", "https://lm-api-reads.fantasy.espn.com")
+
+
+def _set_league_context(league_id: int, season: int) -> None:
+    """Store league context for subsequent HTTP requests."""
+
+    global _LEAGUE_CONTEXT
+    _LEAGUE_CONTEXT = {"league_id": int(league_id), "season": int(season)}
+
+
+def _get_league_context() -> Dict[str, int]:
+    if not _LEAGUE_CONTEXT:
+        raise RuntimeError("League context not initialized; call preflight_league first")
+    return _LEAGUE_CONTEXT
+
+
+def _host_priority() -> List[tuple[str, str]]:
+    use_alt_first = os.getenv("ESPN_USE_ALT_HOST") == "1"
+    hosts = [_PRIMARY_HOST, _ALT_HOST]
+    if use_alt_first:
+        hosts = [hosts[1], hosts[0]]
+    return hosts
+
+
+def _normalize_path(path: str) -> str:
+    if not path:
+        return ""
+    if path.startswith("/") or path.startswith("?"):
+        return path
+    return f"/{path}"
+
+
+def _build_url(host: str, season: int, league_id: int, path: str) -> str:
+    base = (
+        f"{host}/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/{league_id}"
+    )
+    return f"{base}{_normalize_path(path)}"
+
+
+def _sanitize_body(body: str | None) -> str:
+    if not body:
+        return ""
+    compact = " ".join(body.split())
+    return compact[:200]
 
 BENCH_SLOTS = {"BE", "BN", "IR", "TAXI"}
 
@@ -23,67 +79,81 @@ BENCH_SLOTS = {"BE", "BN", "IR", "TAXI"}
 def _ensure_browser_user_agent() -> None:
     """Force requests to report a desktop browser user agent."""
 
-    requests.utils.default_user_agent = lambda: JSON_HEADERS["User-Agent"]
+    requests.utils.default_user_agent = lambda: _DEFAULT_HEADERS["User-Agent"]
 
 
-def _json_get(url: str, params: Dict[str, Any], cookies: Dict[str, str], *, retries: int = 1) -> Dict[str, Any]:
-    """Fetch JSON from ESPN with retry and response validation."""
+def _json_get(
+    path: str, params: Dict[str, Any], cookies: Dict[str, str], *, retries: int = 1
+) -> Dict[str, Any]:
+    """Fetch JSON from ESPN with retry, validation, and host failover."""
 
+    context = _get_league_context()
     attempts = max(1, int(retries) + 1)
+    query = dict(params or {})
+    jar = dict(cookies or {})
     last_response: requests.Response | None = None
     last_error: Exception | None = None
-    for attempt in range(attempts):
-        try:
-            response = requests.get(
-                url,
-                params=params,
-                cookies=cookies,
-                headers=JSON_HEADERS,
-                timeout=20,
-            )
-        except requests.RequestException as exc:  # pragma: no cover - network failure edge
-            last_response = None
-            last_error = exc
-        else:
-            last_response = response
-            content_type = response.headers.get("Content-Type", "").lower()
-            if response.status_code == 200 and "json" in content_type:
-                try:
-                    return response.json()
-                except ValueError as exc:
-                    last_error = exc
-                else:  # pragma: no cover - defensive
-                    last_error = RuntimeError("Unknown JSON error")
-            else:
-                last_error = RuntimeError(
-                    f"Unexpected response (status={response.status_code}, content_type='{content_type}')"
+    last_host_label = ""
+
+    for host_label, host_base in _host_priority():
+        url = _build_url(
+            host_base,
+            context["season"],
+            context["league_id"],
+            path,
+        )
+        last_host_label = host_label
+        for attempt in range(attempts):
+            try:
+                response = _SESSION.get(
+                    url,
+                    params=query,
+                    cookies=jar,
+                    timeout=20,
                 )
+            except requests.RequestException as exc:  # pragma: no cover - network failure edge
+                last_response = None
+                last_error = exc
+            else:
+                last_response = response
+                content_type = response.headers.get("Content-Type", "") or ""
+                if response.status_code == 200 and "json" in content_type.lower():
+                    try:
+                        payload = response.json()
+                    except (ValueError, JSONDecodeError) as exc:
+                        last_error = exc
+                    else:
+                        print(f"[http] ok host={host_label} status={response.status_code}")
+                        return payload
+                else:
+                    last_error = RuntimeError(
+                        "Unexpected response "
+                        f"(status={response.status_code}, content_type='{content_type}')"
+                    )
 
-        if attempt < attempts - 1:
-            time.sleep(0.8)
-            continue
+            if attempt < attempts - 1:
+                time.sleep(0.8)
 
-        break
+        # retry on the next host
 
+    status = "?"
+    body = ""
     if last_response is not None:
-        body = (last_response.text or "")[:200]
-        raise RuntimeError(
-            f"ESPN API request failed ({last_response.status_code}): {body}"
-        ) from last_error
+        status = str(last_response.status_code)
+        body = _sanitize_body(last_response.text)
 
-    raise RuntimeError(f"ESPN API request failed: {last_error}") from last_error
+    raise RuntimeError(
+        f"ESPN API request failed (status={status} host={last_host_label}): {body}"
+    ) from last_error
 
 
 def preflight_league(league_id: int, season: int, espn_s2: str, swid: str) -> Dict[str, Any]:
     """Ensure ESPN league access returns JSON before using ``espn_api``."""
 
-    url = (
-        "https://fantasy.espn.com/apis/v3/games/ffl/seasons/"
-        f"{season}/segments/0/leagues/{league_id}"
-    )
+    _set_league_context(league_id, season)
     try:
         return _json_get(
-            url,
+            "",
             params={"view": "mSettings"},
             cookies={"SWID": swid, "espn_s2": espn_s2},
             retries=1,
@@ -108,6 +178,7 @@ class TeamWeekScore:
 def get_league(league_id: int, season: int, espn_s2: str, swid: str):
     """Instantiate and return an ``espn_api.football.League`` object."""
 
+    _set_league_context(league_id, season)
     _ensure_browser_user_agent()
 
     return League(
