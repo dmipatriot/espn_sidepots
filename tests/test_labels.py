@@ -125,11 +125,17 @@ def test_survivor_summary_uses_labels():
     member_map = build_member_display_map(SETTINGS_FIXTURE)
     labels = build_team_label_map(TEAMS_FIXTURE, member_map)
 
-    result = run_survivor(df, start_week=1, weeks_scope=[1], labels=labels)
+    result = run_survivor(
+        df,
+        start_week=1,
+        weeks_scope=[1],
+        last_completed_week=1,
+        labels=labels,
+    )
 
     assert all("GUID" not in line and "kthorson59" not in line for line in result["summary"])
 
-    formatted = _format_survivor_summary(result, labels)
+    formatted = _format_survivor_summary(result, labels, 1)
     assert any(labels[2] in line for line in formatted)
     assert any(labels[1] in line for line in formatted)
     assert all("GUID" not in line and "kthorson59" not in line for line in formatted)

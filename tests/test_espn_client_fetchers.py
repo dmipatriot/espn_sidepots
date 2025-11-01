@@ -50,19 +50,20 @@ def canned_payloads():
         ]
     }
 
-    matchups = {
-        2: {
+    matchups = {}
+    for week in range(1, 6):
+        matchups[week] = {
+            "scoringPeriodId": week,
             "schedule": [
                 {
-                    "id": 77,
-                    "matchupPeriodId": 2,
+                    "id": 70 + week,
+                    "matchupPeriodId": week,
                     "home": {"teamId": 1, "totalPoints": 120.5},
                     "away": {"teamId": 2, "totalPoints": 98.3},
-                    "winner": "HOME",
+                    "winner": "HOME" if week <= 3 else "UNDECIDED",
                 }
-            ]
+            ],
         }
-    }
 
     rosters = {
         2: {
@@ -143,7 +144,8 @@ def stub_json_get(monkeypatch, canned_payloads):
         view = params.get("view")
         if view == "mMatchup":
             week = int(params.get("scoringPeriodId"))
-            return copy.deepcopy(canned_payloads[view][week])
+            payload = canned_payloads[view].get(week, {"scoringPeriodId": week, "schedule": []})
+            return copy.deepcopy(payload)
         if view == "mRoster":
             week = int(params.get("scoringPeriodId"))
             return copy.deepcopy(canned_payloads[view][week])
@@ -172,5 +174,5 @@ def test_fetch_week_scores_uses_first_party_http(sample_client):
 
 
 def test_last_completed_week_respects_settings(sample_client):
-    latest = espn_client.last_completed_week(sample_client)
+    latest = espn_client.last_completed_week(sample_client, start_week=1)
     assert latest == 3

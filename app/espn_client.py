@@ -303,6 +303,43 @@ def fetch_week_matchups(client: ESPNClient, week: int) -> Dict[str, Any]:
     return _json_get("", params=params, cookies=cookies, retries=1)
 
 
+def is_week_complete(matchups_json: dict) -> bool:
+    """Return ``True`` when all matchups for the scoring period have a winner."""
+
+    schedule = matchups_json.get("schedule") or []
+    if not schedule:
+        return False
+
+    raw_period = matchups_json.get("scoringPeriodId")
+    try:
+        scoring_period = int(raw_period)
+    except (TypeError, ValueError):
+        scoring_period = None
+
+    relevant_matchups: List[Dict[str, Any]] = []
+    for matchup in schedule:
+        matchup_period = matchup.get("matchupPeriodId")
+        try:
+            matchup_period_int = int(matchup_period)
+        except (TypeError, ValueError):
+            matchup_period_int = None
+
+        if scoring_period is not None and matchup_period_int not in (None, scoring_period):
+            continue
+
+        relevant_matchups.append(matchup)
+
+    if not relevant_matchups:
+        relevant_matchups = schedule
+
+    for matchup in relevant_matchups:
+        winner = (matchup.get("winner") or "").strip().upper()
+        if winner not in {"HOME", "AWAY", "TIE"}:
+            return False
+
+    return True
+
+
 def fetch_week_rosters(client: ESPNClient, week: int) -> Dict[str, Any]:
     cookies = _apply_client_context(client)
     params = {"view": "mRoster", "scoringPeriodId": int(week)}
@@ -479,31 +516,58 @@ def fetch_week_scores(client: ESPNClient, week: int) -> List[TeamWeekScore]:
     return results
 
 
-def last_completed_week(client: ESPNClient) -> int:
-    """Return last completed scoring period for the league."""
+def last_completed_week(
+    client: ESPNClient, *, start_week: int = 1, end_week: int | None = None
+) -> int:
+    """Return the most recent week with a decided matchup winner."""
 
     settings = fetch_settings(client)
-    status = settings.get("status", {}) or {}
-    latest = (
-        status.get("latestScoringPeriod")
-        or status.get("currentScoringPeriod")
-        or status.get("finalScoringPeriod")
-        or status.get("finalScoringPeriodId")
-        or 0
-    )
-    try:
-        latest_week = int(latest)
-    except (TypeError, ValueError):
-        latest_week = 0
-
     schedule_settings = (
         settings.get("settings", {}).get("scheduleSettings", {}) or {}
     )
     regular_weeks = int(schedule_settings.get("matchupPeriodCount") or 0)
-    if regular_weeks:
-        latest_week = min(latest_week, regular_weeks)
 
-    return max(latest_week, 0)
+    status = settings.get("status", {}) or {}
+    status_candidates: List[int] = []
+    for key in (
+        "latestScoringPeriod",
+        "currentScoringPeriod",
+        "finalScoringPeriod",
+        "finalScoringPeriodId",
+    ):
+        value = status.get(key)
+        try:
+            status_candidates.append(int(value))
+        except (TypeError, ValueError):
+            continue
+
+    if end_week is not None:
+        try:
+            upper_bound = int(end_week)
+        except (TypeError, ValueError):
+            upper_bound = start_week - 1
+    elif regular_weeks:
+        upper_bound = regular_weeks
+    elif status_candidates:
+        upper_bound = max(status_candidates)
+    else:
+        upper_bound = start_week - 1
+
+    if regular_weeks:
+        upper_bound = min(max(upper_bound, 0), regular_weeks)
+
+    if upper_bound < start_week:
+        return start_week - 1
+
+    last_complete = start_week - 1
+    for week in range(start_week, upper_bound + 1):
+        matchups_payload = fetch_week_matchups(client, week)
+        if is_week_complete(matchups_payload):
+            last_complete = week
+        else:
+            break
+
+    return last_complete
 
 
 def extract_league_rules(
