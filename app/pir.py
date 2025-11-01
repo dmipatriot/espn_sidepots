@@ -3,6 +3,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 import pandas as pd
 
+from app.espn_client import label_for
 
 def _apply_tiebreaks(
     df: pd.DataFrame,
@@ -37,6 +38,7 @@ def compute_pir(
     target: float = 150.0,
     tiebreaks: List[str] | None = None,
     weeks_scope: List[int] | None = None,
+    labels: Dict[int, str] | None = None,
 ) -> Dict[str, Any]:
     """Return Price-Is-Right results constrained to the supplied week scope."""
 
@@ -45,6 +47,9 @@ def compute_pir(
         working = working[working["week"].isin(weeks_scope)]
 
     working = working[["team_id", "owner", "week", "points", "bench_points"]].copy()
+    label_map = labels or {}
+    if labels:
+        working["owner"] = working["team_id"].apply(lambda tid: label_for(int(tid), label_map))
     working["bench_points"] = working["bench_points"].fillna(0.0)
     working["delta"] = target - working["points"]
     candidates = working[working["delta"] >= 0].copy()
@@ -55,9 +60,13 @@ def compute_pir(
     leader_info: Dict[str, Any] | None = None
     if not leaderboard.empty:
         top = leaderboard.iloc[0]
+        owner_display = str(top["owner"])
+        if labels:
+            owner_display = label_for(int(top["team_id"]), label_map)
+
         leader_info = {
             "team_id": int(top["team_id"]),
-            "owner": str(top["owner"]),
+            "owner": owner_display,
             "week": int(top["week"]),
             "points": float(top["points"]),
             "delta": float(top["delta"]),

@@ -3,6 +3,7 @@ from typing import Dict, Iterable, List, Tuple
 
 import pandas as pd
 
+from app.espn_client import label_for
 
 def _apply_efficiency_tiebreaks(
     df: pd.DataFrame,
@@ -33,6 +34,7 @@ def season_efficiency(
     df: pd.DataFrame,
     weeks: List[int],
     tiebreaks: List[str] | None = None,
+    labels: Dict[int, str] | None = None,
 ) -> Dict[str, Any]:
     """Aggregate weekly efficiency into season-long leaderboards."""
 
@@ -48,6 +50,11 @@ def season_efficiency(
         mean_efficiency=("efficiency", "mean"),
         median_efficiency=("efficiency", "median"),
     )
+    label_map = labels or {}
+    if labels:
+        grouped["owner"] = grouped["team_id"].apply(
+            lambda tid: label_for(int(tid), label_map)
+        )
     grouped["season_efficiency"] = grouped["mean_efficiency"]
 
     ordered = _apply_efficiency_tiebreaks(

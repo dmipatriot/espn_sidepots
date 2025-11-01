@@ -3,6 +3,7 @@ from typing import Any, Dict, Iterable, List
 
 import pandas as pd
 
+from app.espn_client import label_for
 
 def _resolve_tiebreak(
     candidates: List[int],
@@ -51,6 +52,7 @@ def run_survivor(
     start_week: int = 3,
     tiebreaks: List[str] | None = None,
     weeks_scope: List[int] | None = None,
+    labels: Dict[int, str] | None = None,
 ) -> Dict[str, Any]:
     """Simulate a season-long survivor pool with deterministic tie handling."""
 
@@ -60,7 +62,17 @@ def run_survivor(
         weeks = sorted({int(week) for week in df["week"].unique()})
 
     teams = sorted({int(team_id) for team_id in df["team_id"].unique()})
-    owner_map = {int(row["team_id"]): str(row["owner"]) for _, row in df.drop_duplicates("team_id").iterrows()}
+    label_map = labels or {}
+    fallback_owner_map = {
+        int(row["team_id"]): str(row["owner"])
+        for _, row in df.drop_duplicates("team_id").iterrows()
+    }
+    owner_map: Dict[int, str] = {}
+    for team in teams:
+        if team in label_map and label_map[team]:
+            owner_map[team] = label_map[team]
+        else:
+            owner_map[team] = fallback_owner_map.get(team, label_for(team, {}))
 
     cumulative_eff: Dict[int, List[float]] = {team: [] for team in teams}
     cumulative_points: Dict[int, float] = {team: 0.0 for team in teams}

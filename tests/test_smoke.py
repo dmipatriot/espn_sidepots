@@ -37,6 +37,8 @@ def test_main_smoke(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "extract_league_rules", lambda _client: {"regular_season_weeks": 14})
     monkeypatch.setattr(main, "last_completed_week", lambda _client: 1)
     monkeypatch.setattr(main, "get_weeks", lambda *_args, **_kwargs: [1])
+    monkeypatch.setattr(main, "fetch_teams", lambda *_args, **_kwargs: {"teams": []})
+    monkeypatch.setattr(main, "build_team_label_map", lambda _payload: {})
     monkeypatch.setattr(main, "fetch_week_scores", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(main, "build_base_frame", lambda payload: payload)
     monkeypatch.setattr(main, "add_optimal_points", lambda base, _rules: base)
