@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import time
+from json import JSONDecodeError
 from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
@@ -215,7 +216,18 @@ def main() -> None:
         regular_weeks = int(
             cfg.get("regular_season_weeks") or rules.get("regular_season_weeks") or 0
         )
-        league = init_league(client)
+        try:
+            league = init_league(client)
+        except (RuntimeError, JSONDecodeError):
+            LOGGER.warning("Transient ESPN non-JSON; will retry once after 2s")
+            time.sleep(2)
+            try:
+                league = init_league(client)
+            except (RuntimeError, JSONDecodeError):
+                LOGGER.error(
+                    "Failed to initialize ESPN league after retry; check prior status/snippet diagnostics."
+                )
+                sys.exit(1)
         lcw = last_completed_week(client, start_week=1)
         weeks = get_weeks(args.weeks, regular_weeks, last_completed=lcw)
 
