@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from json import JSONDecodeError
 from typing import Any, Dict, Iterable, List
 
+import logging
+
 import requests
 
 from espn_api.football.constant import POSITION_MAP
@@ -24,6 +26,8 @@ _DEFAULT_HEADERS = {
 
 _SESSION = requests.Session()
 _SESSION.headers.update(_DEFAULT_HEADERS)
+
+LOGGER = logging.getLogger(__name__)
 
 _LEAGUE_CONTEXT: Dict[str, int] | None = None
 
@@ -124,7 +128,9 @@ def _json_get(
                     except (ValueError, JSONDecodeError) as exc:
                         last_error = exc
                     else:
-                        print(f"[http] ok host={host_label} status={response.status_code}")
+                        LOGGER.debug(
+                            "[http] ok host=%s status=%s", host_label, response.status_code
+                        )
                         return payload
                 else:
                     last_error = RuntimeError(
@@ -201,6 +207,125 @@ def fetch_settings(client: ESPNClient) -> Dict[str, Any]:
 def fetch_teams(client: ESPNClient) -> Dict[str, Any]:
     cookies = _apply_client_context(client)
     return _json_get("", params={"view": "mTeam"}, cookies=cookies, retries=1)
+
+
+def _clean_owner_identifier(raw: str | None) -> str:
+    if not raw:
+        return ""
+    trimmed = raw.strip().strip("{}")
+    compact = "".join(ch for ch in trimmed if ch.isalnum())
+    return compact.upper()
+
+
+def _format_owner_alias(identifier: str | None) -> str:
+    cleaned = _clean_owner_identifier(identifier)
+    return f"Owner {cleaned[:6]}" if cleaned else "Owner"
+
+
+def _owner_display_from_entry(entry: Any) -> str:
+    if isinstance(entry, dict):
+        for key in ("displayName", "fullName", "firstName", "lastName", "nickname"):
+            value = entry.get(key)
+            if value:
+                return str(value)
+        ident = (
+            entry.get("id")
+            or entry.get("ownerId")
+            or entry.get("userId")
+            or entry.get("primaryOwner")
+        )
+        if ident:
+            return _format_owner_alias(str(ident))
+    elif entry:
+        candidate = str(entry).strip()
+        if not candidate:
+            return ""
+        cleaned = _clean_owner_identifier(candidate)
+        if cleaned and (len(candidate) > 8 or "-" in candidate or "{" in candidate):
+            return _format_owner_alias(candidate)
+        return candidate
+    return ""
+
+
+def build_team_label_map(teams_json: Dict[str, Any]) -> Dict[int, str]:
+    """Return mapping of team id to preferred display label."""
+
+    members_lookup: Dict[str, str] = {}
+    for members_key in ("members", "users"):
+        for member in teams_json.get(members_key, []) or []:
+            ident = (
+                member.get("id")
+                or member.get("ownerId")
+                or member.get("userId")
+                or member.get("primaryOwner")
+            )
+            if ident is None:
+                continue
+            for field in ("displayName", "fullName", "nickname"):
+                value = member.get(field)
+                if value:
+                    members_lookup[str(ident)] = str(value)
+                    break
+
+    labels: Dict[int, str] = {}
+    for team in teams_json.get("teams", []) or []:
+        team_id_raw = team.get("teamId", team.get("id"))
+        if team_id_raw is None:
+            continue
+        try:
+            team_id = int(team_id_raw)
+        except (TypeError, ValueError):
+            continue
+
+        abbrev = str(team.get("abbrev") or "").strip()
+        location = str(team.get("location") or "").strip()
+        nickname = str(team.get("nickname") or "").strip()
+
+        if abbrev and location and nickname:
+            labels[team_id] = f"{abbrev} — {location} {nickname}"
+            continue
+
+        owners = team.get("owners") or []
+        owner_label = ""
+        if owners:
+            primary_owner = owners[0]
+            owner_label = _owner_display_from_entry(primary_owner)
+            lookup_key = ""
+            if isinstance(primary_owner, dict):
+                lookup_key = str(
+                    primary_owner.get("id")
+                    or primary_owner.get("ownerId")
+                    or primary_owner.get("userId")
+                )
+            else:
+                lookup_key = str(primary_owner)
+            owner_label = members_lookup.get(lookup_key, owner_label)
+
+        if owner_label:
+            labels[team_id] = owner_label
+            continue
+
+        primary_owner = team.get("primaryOwner")
+        if primary_owner:
+            labels[team_id] = _format_owner_alias(str(primary_owner))
+            continue
+
+        labels[team_id] = f"Team {team_id}"
+
+    return labels
+
+
+def label_for(team_id: int, labels: Dict[int, str]) -> str:
+    """Return a human-friendly label for a team identifier."""
+
+    try:
+        normalized_id = int(team_id)
+    except (TypeError, ValueError):
+        return str(team_id)
+
+    if normalized_id in labels and labels[normalized_id]:
+        return labels[normalized_id]
+    return f"Team {normalized_id}"
 
 
 def fetch_week_matchups(client: ESPNClient, week: int) -> Dict[str, Any]:

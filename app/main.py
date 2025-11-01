@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -14,9 +15,12 @@ from app import discord
 from app.efficiency import season_efficiency
 from app.espn_client import (
     ESPNClient,
+    build_team_label_map,
     extract_league_rules,
+    fetch_teams,
     fetch_week_scores,
     get_weeks,
+    label_for,
     last_completed_week,
     preflight_league,
 )
@@ -25,7 +29,10 @@ from app.scoring import add_optimal_points, build_base_frame
 from app.survivor import run_survivor
 
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+_LOG_LEVEL_NAME = os.getenv("LOG_LEVEL", "INFO").upper()
+_LEVEL_MAPPING = logging.getLevelNamesMapping()
+_LOG_LEVEL = _LEVEL_MAPPING.get(_LOG_LEVEL_NAME, logging.INFO)
+logging.basicConfig(level=_LOG_LEVEL, format="%(asctime)s %(levelname)s %(message)s")
 LOGGER = logging.getLogger("espn_sidepots")
 
 LOCK_PATH = Path("/tmp/espn_sidepots.lock")
@@ -49,31 +56,34 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _format_pir_summary(result: Dict[str, object]) -> List[str]:
+def _format_pir_summary(result: Dict[str, object], labels: Dict[int, str]) -> List[str]:
     leaderboard = result["leaderboard_df"].head(5)
     lines = []
     for _, row in leaderboard.iterrows():
+        team_label = label_for(int(row["team_id"]), labels)
         lines.append(
-            f"Week {int(row['week'])}: {row['owner']} - {row['points']:.2f} (Δ {row['delta']:.2f})"
+            f"Week {int(row['week'])}: {team_label} - {row['points']:.2f} (Δ {row['delta']:.2f})"
         )
     return lines or ["No qualifying scores"]
 
 
-def _format_efficiency_summary(result: Dict[str, object]) -> List[str]:
+def _format_efficiency_summary(result: Dict[str, object], labels: Dict[int, str]) -> List[str]:
     table = result["table"].head(5)
     lines = []
     for _, row in table.iterrows():
+        team_label = label_for(int(row["team_id"]), labels)
         lines.append(
-            f"{row['owner']}: {row['season_efficiency']:.3f} (Pts {row['total_points']:.1f})"
+            f"{team_label}: {row['season_efficiency']:.3f} (Pts {row['total_points']:.1f})"
         )
     return lines or ["No efficiency data"]
 
 
-def _format_survivor_summary(result: Dict[str, object]) -> List[str]:
+def _format_survivor_summary(result: Dict[str, object], labels: Dict[int, str]) -> List[str]:
     lines = result["summary"][:5]
     alive = result["alive"]
     if alive:
-        lines.append("Alive: " + ", ".join(str(team) for team in alive))
+        alive_labels = [label_for(int(team), labels) for team in alive]
+        lines.append("Alive: " + ", ".join(alive_labels))
     return lines or ["No eliminations yet"]
 
 
@@ -81,20 +91,24 @@ def _format_weeks_for_log(weeks: List[int]) -> str:
     return ",".join(str(week) for week in weeks) if weeks else "none"
 
 
-def _maybe_post(cfg: Dict[str, object], key: str, title: str, lines: List[str], dry_run: bool) -> None:
+def _maybe_post(
+    cfg: Dict[str, object], key: str, title: str, lines: List[str], dry_run: bool
+) -> bool:
     if dry_run:
         LOGGER.info("Dry-run: skipping Discord post for %s", title)
         print(f"\n[{title}]")
         for line in lines:
             print(line)
-        return
+        return False
 
     LOGGER.info("Posting %s report to Discord", title)
     status = discord.post_text(cfg, key, title, lines)
     if status is None:
         LOGGER.info("Discord webhook for %s not configured; skipping", title)
-    else:
-        LOGGER.info("Discord post for %s completed with status=%s", title, status)
+        return False
+
+    LOGGER.info("Discord post for %s completed with status=%s", title, status)
+    return 200 <= int(status) < 300
 
 
 def _get_int_env(name: str, default: int | None) -> int:
@@ -143,6 +157,8 @@ def main() -> None:
     if not lock_acquired:
         return
 
+    post_statuses: List[bool] = []
+
     try:
         league_id = _get_int_env("LEAGUE_ID", cfg.get("league_id"))
         season = _get_int_env("SEASON", cfg.get("season"))
@@ -187,6 +203,9 @@ def main() -> None:
         completed = last_completed_week(client)
         weeks = get_weeks(args.weeks, regular_weeks, last_completed=completed)
 
+        teams_payload = fetch_teams(client)
+        labels = build_team_label_map(teams_payload)
+
         payload: List[Dict[str, object]] = []
         for week in weeks:
             for team_score in fetch_week_scores(client, week):
@@ -205,14 +224,17 @@ def main() -> None:
                 target=float(cfg.get("pir_target", 150.0)),
                 tiebreaks=list((cfg.get("tiebreaks") or {}).get("pir", [])),
                 weeks_scope=weeks,
+                labels=labels,
             )
-            _maybe_post(
+            posted = _maybe_post(
                 cfg,
                 "pir",
                 "Price Is Right",
-                _format_pir_summary(pir_result),
+                _format_pir_summary(pir_result, labels),
                 args.dry_run,
             )
+            if posted:
+                post_statuses.append(posted)
 
         if "efficiency" in modes:
             LOGGER.info("Starting efficiency report for weeks=%s", weeks_label)
@@ -220,14 +242,17 @@ def main() -> None:
                 scoring_df,
                 weeks=weeks,
                 tiebreaks=list((cfg.get("tiebreaks") or {}).get("efficiency", [])),
+                labels=labels,
             )
-            _maybe_post(
+            posted = _maybe_post(
                 cfg,
                 "efficiency",
                 "Season Efficiency",
-                _format_efficiency_summary(eff_result),
+                _format_efficiency_summary(eff_result, labels),
                 args.dry_run,
             )
+            if posted:
+                post_statuses.append(posted)
 
         if "survivor" in modes:
             LOGGER.info("Starting survivor report for weeks=%s", weeks_label)
@@ -236,14 +261,17 @@ def main() -> None:
                 start_week=int(cfg.get("survivor_start_week", 1)),
                 tiebreaks=list((cfg.get("tiebreaks") or {}).get("survivor", [])),
                 weeks_scope=weeks,
+                labels=labels,
             )
-            _maybe_post(
+            posted = _maybe_post(
                 cfg,
                 "survivor",
                 "Survivor Pool",
-                _format_survivor_summary(survivor_result),
+                _format_survivor_summary(survivor_result, labels),
                 args.dry_run,
             )
+            if posted:
+                post_statuses.append(posted)
 
         LOGGER.info("Done.")
     finally:
@@ -252,6 +280,10 @@ def main() -> None:
                 LOCK_PATH.unlink()
             except FileNotFoundError:  # pragma: no cover - already removed
                 pass
+
+    if len(post_statuses) == 3 and all(post_statuses):
+        LOGGER.info("✅ All reports posted successfully. Exiting 0")
+        sys.exit(0)
 
 
 if __name__ == "__main__":

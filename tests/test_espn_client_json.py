@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -39,7 +40,7 @@ def _set_context() -> None:
     espn_client._set_league_context(league_id=123456, season=2024)
 
 
-def test_json_get_retries_and_recovers(monkeypatch, capsys):
+def test_json_get_retries_and_recovers(monkeypatch, caplog):
     _set_context()
     monkeypatch.delenv("ESPN_USE_ALT_HOST", raising=False)
 
@@ -57,18 +58,18 @@ def test_json_get_retries_and_recovers(monkeypatch, capsys):
     monkeypatch.setattr(requests.Session, "get", fake_get)
     monkeypatch.setattr(espn_client.time, "sleep", lambda _s: None)
 
-    result = espn_client._json_get(
-        "", params={"view": "mSettings"}, cookies={}, retries=1
-    )
+    with caplog.at_level(logging.DEBUG, espn_client.__name__):
+        result = espn_client._json_get(
+            "", params={"view": "mSettings"}, cookies={}, retries=1
+        )
 
     assert result == {"ok": True}
     assert len(calls) == 2
     assert all("fantasy.espn.com" in url for url in calls)
-    out = capsys.readouterr().out
-    assert "[http] ok host=fantasy" in out
+    assert any("[http] ok host=fantasy" in message for message in caplog.messages)
 
 
-def test_json_get_failover_to_alt_host(monkeypatch, capsys):
+def test_json_get_failover_to_alt_host(monkeypatch, caplog):
     _set_context()
     monkeypatch.delenv("ESPN_USE_ALT_HOST", raising=False)
 
@@ -91,15 +92,15 @@ def test_json_get_failover_to_alt_host(monkeypatch, capsys):
     monkeypatch.setattr(requests.Session, "get", fake_get)
     monkeypatch.setattr(espn_client.time, "sleep", lambda _s: None)
 
-    result = espn_client._json_get(
-        "", params={"view": "mSettings"}, cookies={}, retries=1
-    )
+    with caplog.at_level(logging.DEBUG, espn_client.__name__):
+        result = espn_client._json_get(
+            "", params={"view": "mSettings"}, cookies={}, retries=1
+        )
 
     assert result == {"ok": True}
     assert any("fantasy.espn.com" in url for url in calls)
     assert any("lm-api-reads.fantasy.espn.com" in url for url in calls)
-    out = capsys.readouterr().out
-    assert "[http] ok host=lm-api-reads" in out
+    assert any("[http] ok host=lm-api-reads" in message for message in caplog.messages)
 
 
 def test_json_get_prefers_alt_host_when_forced(monkeypatch):
