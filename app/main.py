@@ -5,14 +5,14 @@ import logging
 import os
 import sys
 import time
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Set, Tuple
 
 import yaml
 
 from app import discord
-from app.efficiency import EffStat, format_efficiency_report, update_efficiency
+from app.efficiency import EffStat, format_efficiency_table, update_efficiency
 from app.espn_client import (
     ESPNClient,
     build_member_display_map,
@@ -219,30 +219,21 @@ def main() -> None:
 
         payload: List[Dict[str, object]] = []
         stats: Dict[int, EffStat] = {}
+        dedupe_seen: Set[Tuple[int, int]] = set()
         modes = [args.mode] if args.mode != "all" else ["pir", "efficiency", "survivor"]
+        weeks = sorted(set(weeks))
+        weeks = [week for week in weeks if week <= lcw]
         weeks_label = _format_weeks_for_log(weeks)
         need_payload = any(mode in modes for mode in ("pir", "survivor"))
 
         for week in weeks:
-            week_scores = fetch_week_scores(client, week)
+            week_scores = fetch_week_scores(client, week, league_rules=rules)
             week_payload = [asdict(team_score) for team_score in week_scores]
             if need_payload:
                 payload.extend(week_payload)
 
             if "efficiency" in modes:
-                week_df = build_base_frame(week_payload)
-                optimal_map: Dict[int, float] = {}
-                if not week_df.empty:
-                    week_scored = add_optimal_points(week_df, rules)
-                    optimal_map = {
-                        int(row["team_id"]): float(row.get("optimal_points") or 0.0)
-                        for _, row in week_scored.iterrows()
-                    }
-                week_scores_with_optimal = [
-                    replace(score, optimal_points=optimal_map.get(score.team_id, 0.0))
-                    for score in week_scores
-                ]
-                update_efficiency(stats, week_scores_with_optimal)
+                update_efficiency(stats, week_scores, dedupe_seen=dedupe_seen)
 
         scoring_df = None
         if need_payload:
@@ -273,7 +264,7 @@ def main() -> None:
 
         if "efficiency" in modes:
             LOGGER.info("Starting efficiency report for weeks=%s", weeks_label)
-            report_text = format_efficiency_report(labels, stats)
+            report_text = format_efficiency_table(labels, stats)
             report_lines = report_text.splitlines()
             posted = _maybe_post(
                 cfg,

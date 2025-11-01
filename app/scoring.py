@@ -88,6 +88,21 @@ def _optimal_lineup_score(roster: Iterable[Dict[str, Any]], slots: List[str]) ->
     return float(round(_best(0, 0), 2))
 
 
+def compute_optimal_points(
+    roster: Iterable[Dict[str, Any]],
+    league_rules: Dict[str, Any],
+    *,
+    actual_points: float = 0.0,
+) -> float:
+    """Return the optimal lineup total for a roster using league slot rules."""
+
+    slot_counts = dict(league_rules.get("slot_counts") or {})
+    slots = _expand_lineup_slots(slot_counts)
+    if not slots:
+        return float(actual_points)
+    return _optimal_lineup_score(roster, slots)
+
+
 def add_optimal_points(df: pd.DataFrame, league_rules: Dict[str, Any]) -> pd.DataFrame:
     """Append ``optimal_points`` and ``efficiency`` columns to the DataFrame."""
 
