@@ -39,8 +39,7 @@ def test_env_overrides_yaml_for_league_and_season(monkeypatch, tmp_path):
     )
 
     captured_preflight = {}
-    captured_clients: list[main.ESPNClient] = []
-    captured_leagues: list[object] = []
+    captured_fetch_calls: list[main.ESPNClient] = []
 
     def fake_preflight(**kwargs):
         captured_preflight.update(kwargs)
@@ -59,16 +58,10 @@ def test_env_overrides_yaml_for_league_and_season(monkeypatch, tmp_path):
     monkeypatch.setattr(
         main, "build_team_label_map", lambda *_args, **_kwargs: {}
     )
-    fake_league = object()
-    monkeypatch.setattr(
-        main,
-        "init_league",
-        lambda client: captured_clients.append(client) or fake_league,
-    )
     monkeypatch.setattr(
         main,
         "fetch_week_scores",
-        lambda league, *_args, **_kwargs: captured_leagues.append(league) or [],
+        lambda client, *_args, **_kwargs: captured_fetch_calls.append(client) or [],
     )
     monkeypatch.setattr(main, "build_base_frame", lambda payload: payload)
     monkeypatch.setattr(main, "add_optimal_points", lambda base, _rules: base)
@@ -77,9 +70,8 @@ def test_env_overrides_yaml_for_league_and_season(monkeypatch, tmp_path):
 
     main.main()
 
-    assert captured_clients, "expected init_league to receive a client"
-    assert captured_leagues == [fake_league]
-    assert captured_clients[0].league_id == 999999
-    assert captured_clients[0].season == 2035
+    assert captured_fetch_calls, "expected fetch_week_scores to be invoked"
+    assert captured_fetch_calls[0].league_id == 999999
+    assert captured_fetch_calls[0].season == 2035
     assert captured_preflight["league_id"] == 999999
     assert captured_preflight["season"] == 2035
