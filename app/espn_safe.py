@@ -9,54 +9,68 @@ def _is_json_response(r) -> bool:
     ct = (r.headers.get("Content-Type") or "").lower()
     if not ct.startswith("application/json"):
         return False
-    # quick sanity on payload
     t = (r.text or "").lstrip()
     return t.startswith("{") or t.startswith("[")
 
-def _try_json(r) -> Dict[str, Any] | None:
+def _try_json(r):
     try:
         return r.json()
     except Exception:
         return None
 
-def league_get_safe(self, endpoint: str = "league", params: Dict[str, Any] | None = None, **kw) -> Dict[str, Any]:
+def league_get_safe(self, endpoint: str = "league", params: Dict[str, Any] | None = None, **kw):
     """
-    Safe replacement for espn_api.requests.*Requests.league_get().
-    Uses public self.get(...), retries on non-JSON or JSONDecodeError, logs snippet.
+    Safe replacement for espn_api ... .league_get().
+    - Uses public self.get(...)
+    - Retries on non-JSON / JSON parse errors
+    - Normalizes kwargs so 'params' isn't passed twice
     """
-    attempts = _HTTP_BACKOFF + [0]  # last try without sleep
-    last_err = None
+    # --- normalize kwargs to avoid "multiple values for 'params'"
+    if params is None and "params" in kw:
+        params = kw.pop("params")
+    else:
+        # if both present, drop duplicate from kw
+        kw.pop("params", None)
+    headers = kw.pop("headers", None)  # optional, pass through once
 
-    for delay in attempts:
-        # NOTE: the public method is .get(...), NOT _get(...)
-        response = self.get(endpoint, params=params, **kw)  # <-- key fix
-        if _is_json_response(response):
-            data = _try_json(response)
+    last_err = None
+    for delay in _HTTP_BACKOFF + [0]:
+        try:
+            # pass each argument at most once
+            call_kwargs = {}
+            if params is not None:
+                call_kwargs["params"] = params
+            if headers is not None:
+                call_kwargs["headers"] = headers
+            call_kwargs.update(kw)
+
+            resp = self.get(endpoint, **call_kwargs)
+        except TypeError as e:
+            # super defensive: if signature differs, try minimal call
+            resp = self.get(endpoint, params=params)
+
+        if _is_json_response(resp):
+            data = _try_json(resp)
             if data is not None:
-                # their logger expects a dict; keep it small
                 try:
-                    self.logger.log_request(endpoint=endpoint, params=params or {}, headers={}, response=data)
+                    self.logger.log_request(endpoint=endpoint, params=params or {}, headers=headers or {}, response=data)
                 except Exception:
                     pass
                 return data
 
-        # non-JSON (usually HTML 200 bot page) or JSON parse fail
-        snippet = (response.text or "")[:250]
+        snippet = (resp.text or "")[:250]
         try:
             self.logger.log_request(
                 endpoint=endpoint,
                 params=params or {},
-                headers={},
-                response={"non_json": True, "status": response.status_code, "snippet": snippet},
+                headers=headers or {},
+                response={"non_json": True, "status": resp.status_code, "snippet": snippet},
             )
         except Exception:
             pass
 
-        last_err = RuntimeError(
-            f"ESPN returned non-JSON for '{endpoint}' (status={response.status_code}); snippet={snippet!r}"
-        )
+        last_err = RuntimeError(f"ESPN returned non-JSON for '{endpoint}' (status={getattr(resp,'status_code', '?')}); snippet={snippet!r}")
         if delay:
             time.sleep(delay)
 
-    # exhausted retries
-    raise last_err or RuntimeError("ESPN returned non-JSON for 'league' and no details available.")
+    raise last_err or RuntimeError("ESPN returned non-JSON for 'league' with no further details.")
