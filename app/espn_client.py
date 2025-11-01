@@ -214,6 +214,29 @@ def _apply_client_context(client: ESPNClient) -> Dict[str, str]:
     _ensure_browser_user_agent()
     return {"SWID": client.swid, "espn_s2": client.espn_s2}
 
+# app/espn_client.py (top-level, once)
+def _install_safe_league_get() -> None:
+    # Support multiple espn_api versions (class name differs)
+    from espn_api.requests import espn_requests as _e
+    from app.espn_safe import league_get_safe
+
+    # pick whichever request class exists and has .league_get and .get
+    candidates = []
+    for name in ("EspnFantasyRequests", "EspnRequests"):
+        cls = getattr(_e, name, None)
+        if cls and hasattr(cls, "league_get") and hasattr(cls, "get"):
+            candidates.append(cls)
+
+    if not candidates:
+        return  # nothing to patch; fail silently
+
+    cls = candidates[0]
+    # idempotent patch
+    if getattr(cls.league_get, "__name__", "") != "league_get_safe":
+        cls.league_get = league_get_safe  # type: ignore[attr-defined]
+
+_install_safe_league_get()
+
 
 def init_league(client: ESPNClient) -> League:
     """Instantiate an espn_api League using the client credentials."""
