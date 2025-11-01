@@ -1,97 +1,62 @@
+# app/espn_safe.py
 from __future__ import annotations
-
 import time
-from json import JSONDecodeError
 from typing import Any, Dict
 
-from requests import Response
+_HTTP_BACKOFF = [0.6, 1.2, 2.4]  # seconds
 
-
-http_backoff_delays = [0.6, 1.2, 2.4]
-
-
-def is_json_response(response: Response) -> bool:
-    """Return True when the response looks like JSON."""
-
-    if response is None:
+def _is_json_response(r) -> bool:
+    ct = (r.headers.get("Content-Type") or "").lower()
+    if not ct.startswith("application/json"):
         return False
-    content_type = (response.headers or {}).get("Content-Type", "")
-    if not content_type.lower().startswith("application/json"):
-        return False
-    text = response.text or ""
-    stripped = text.lstrip()
-    if not stripped:
-        return False
-    return stripped[0] in "{["
+    # quick sanity on payload
+    t = (r.text or "").lstrip()
+    return t.startswith("{") or t.startswith("[")
 
-
-def try_json(response: Response) -> Dict[str, Any] | None:
-    """Attempt to parse JSON if the response looks valid."""
-
-    if not is_json_response(response):
-        return None
+def _try_json(r) -> Dict[str, Any] | None:
     try:
-        data = response.json()
-    except (ValueError, JSONDecodeError):
+        return r.json()
+    except Exception:
         return None
-    if isinstance(data, dict):
-        return data
-    return None
 
-
-def league_get_safe(self, endpoint: str = "league", params: Dict[str, Any] | None = None, **kw: Any) -> Dict[str, Any]:
+def league_get_safe(self, endpoint: str = "league", params: Dict[str, Any] | None = None, **kw) -> Dict[str, Any]:
     """
-    Replacement for espn_api.requests.espn_requests.EspnRequests.league_get
-    Retries on non-JSON or JSONDecodeError; logs short HTML snippet for diagnostics.
-    Returns parsed JSON.
+    Safe replacement for espn_api.requests.*Requests.league_get().
+    Uses public self.get(...), retries on non-JSON or JSONDecodeError, logs snippet.
     """
+    attempts = _HTTP_BACKOFF + [0]  # last try without sleep
+    last_err = None
 
-    delays = http_backoff_delays + [0]
-    for attempt, delay in enumerate(delays):
-        response = self._get(endpoint, params=params, **kw)
-        if is_json_response(response):
-            try:
-                data = response.json()
-            except (ValueError, JSONDecodeError) as exc:
-                snippet = (response.text or "")[:250]
-                self.logger.log_request(
-                    endpoint=endpoint,
-                    params=params,
-                    headers={},
-                    response={
-                        "json_error": True,
-                        "status": response.status_code,
-                        "snippet": snippet,
-                        "error": str(exc),
-                    },
-                )
-            else:
-                self.logger.log_request(
-                    endpoint=endpoint,
-                    params=params,
-                    headers={},
-                    response=data,
-                )
+    for delay in attempts:
+        # NOTE: the public method is .get(...), NOT _get(...)
+        response = self.get(endpoint, params=params, **kw)  # <-- key fix
+        if _is_json_response(response):
+            data = _try_json(response)
+            if data is not None:
+                # their logger expects a dict; keep it small
+                try:
+                    self.logger.log_request(endpoint=endpoint, params=params or {}, headers={}, response=data)
+                except Exception:
+                    pass
                 return data
-        else:
-            snippet = (response.text or "")[:250]
+
+        # non-JSON (usually HTML 200 bot page) or JSON parse fail
+        snippet = (response.text or "")[:250]
+        try:
             self.logger.log_request(
                 endpoint=endpoint,
-                params=params,
+                params=params or {},
                 headers={},
-                response={
-                    "non_json": True,
-                    "status": response.status_code,
-                    "snippet": snippet,
-                },
+                response={"non_json": True, "status": response.status_code, "snippet": snippet},
             )
+        except Exception:
+            pass
 
-        if attempt < len(http_backoff_delays):
-            time.sleep(delay)
-            continue
-        raise RuntimeError(
-            "ESPN returned non-JSON for league endpoint after retries "
-            f"(status={response.status_code})."
+        last_err = RuntimeError(
+            f"ESPN returned non-JSON for '{endpoint}' (status={response.status_code}); snippet={snippet!r}"
         )
+        if delay:
+            time.sleep(delay)
 
-    raise RuntimeError("league_get_safe retry loop exhausted unexpectedly")
+    # exhausted retries
+    raise last_err or RuntimeError("ESPN returned non-JSON for 'league' and no details available.")
