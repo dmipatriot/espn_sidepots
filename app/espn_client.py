@@ -2,10 +2,45 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List
 
+import requests
+
 from espn_api.football.constant import POSITION_MAP
 from espn_api.football.league import League
 
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+)
+
 BENCH_SLOTS = {"BE", "BN", "IR", "TAXI"}
+
+
+def _ensure_browser_user_agent() -> None:
+    """Force requests to report a desktop browser user agent."""
+
+    requests.utils.default_user_agent = lambda: BROWSER_USER_AGENT
+
+
+def _preflight_league_request(league_id: int, season: int, espn_s2: str, swid: str) -> None:
+    """Perform a preflight GET request to detect ESPN 403s early."""
+
+    url = (
+        "https://fantasy.espn.com/apis/v3/games/ffl/seasons/"
+        f"{season}/segments/0/leagues/{league_id}"
+    )
+    response = requests.get(
+        url,
+        params={"view": "mSettings"},
+        cookies={"SWID": swid, "espn_s2": espn_s2},
+        headers={"User-Agent": BROWSER_USER_AGENT},
+        timeout=20,
+    )
+    if response.status_code != 200:
+        msg = (
+            "ESPN league preflight failed with status "
+            f"{response.status_code}: {response.text.strip()}"
+        )
+        raise RuntimeError(msg)
 
 @dataclass(frozen=True)
 class TeamWeekScore:
@@ -19,6 +54,9 @@ class TeamWeekScore:
 
 def get_league(league_id: int, season: int, espn_s2: str, swid: str):
     """Instantiate and return an ``espn_api.football.League`` object."""
+
+    _ensure_browser_user_agent()
+    _preflight_league_request(league_id, season, espn_s2, swid)
 
     return League(
         league_id=league_id,
