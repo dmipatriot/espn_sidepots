@@ -12,6 +12,15 @@ import requests
 
 from espn_api.football.constant import POSITION_MAP
 from espn_api.football import League
+try:  # pragma: no cover - dependency compatibility shim
+    from espn_api.requests.espn_requests import EspnRequests as _EspnRequests
+except ImportError:  # pragma: no cover - espn_api >= 0.42.0
+    from espn_api.requests.espn_requests import EspnFantasyRequests as _EspnRequests
+
+from app.espn_safe import league_get_safe
+
+if getattr(_EspnRequests.league_get, "__name__", "") != "league_get_safe":
+    _EspnRequests.league_get = league_get_safe
 
 from app.espn_lineup import (
     STARTER_EXCLUDES,
