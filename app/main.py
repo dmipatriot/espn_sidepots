@@ -13,9 +13,9 @@ import yaml
 from app import discord
 from app.efficiency import season_efficiency
 from app.espn_client import (
+    ESPNClient,
     extract_league_rules,
     fetch_week_scores,
-    get_league,
     get_weeks,
     last_completed_week,
     preflight_league,
@@ -165,6 +165,13 @@ def main() -> None:
             _mask_secret(swid),
         )
 
+        client = ESPNClient(
+            league_id=league_id,
+            season=season,
+            espn_s2=espn_s2,
+            swid=swid,
+        )
+
         preflight_league(
             league_id=league_id,
             season=season,
@@ -173,22 +180,16 @@ def main() -> None:
         )
         LOGGER.info("[preflight] OK (JSON)")
 
-        league = get_league(
-            league_id=league_id,
-            season=season,
-            espn_s2=espn_s2,
-            swid=swid,
-        )
-        rules = extract_league_rules(league)
+        rules = extract_league_rules(client)
         regular_weeks = int(
             cfg.get("regular_season_weeks") or rules.get("regular_season_weeks") or 0
         )
-        completed = last_completed_week(league)
+        completed = last_completed_week(client)
         weeks = get_weeks(args.weeks, regular_weeks, last_completed=completed)
 
         payload: List[Dict[str, object]] = []
         for week in weeks:
-            for team_score in fetch_week_scores(league, week):
+            for team_score in fetch_week_scores(client, week):
                 payload.append(asdict(team_score))
 
         base_df = build_base_frame(payload)

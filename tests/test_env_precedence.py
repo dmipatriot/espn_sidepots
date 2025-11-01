@@ -38,27 +38,22 @@ def test_env_overrides_yaml_for_league_and_season(monkeypatch, tmp_path):
         lambda: argparse.Namespace(mode="pir", weeks="auto", dry_run=True),
     )
 
-    captured_get = {}
     captured_preflight = {}
+    captured_clients: list[main.ESPNClient] = []
 
     def fake_preflight(**kwargs):
         captured_preflight.update(kwargs)
         return {"status": "ok"}
 
-    def fake_get_league(**kwargs):
-        captured_get.update(kwargs)
-
-        class _League:
-            pass
-
-        return _League()
-
     monkeypatch.setattr(main, "preflight_league", fake_preflight)
-    monkeypatch.setattr(main, "get_league", fake_get_league)
-    monkeypatch.setattr(main, "extract_league_rules", lambda _league: {"regular_season_weeks": 14})
-    monkeypatch.setattr(main, "last_completed_week", lambda _league: 1)
+    monkeypatch.setattr(main, "extract_league_rules", lambda _client: {"regular_season_weeks": 14})
+    monkeypatch.setattr(main, "last_completed_week", lambda _client: 1)
     monkeypatch.setattr(main, "get_weeks", lambda *_args, **_kwargs: [1])
-    monkeypatch.setattr(main, "fetch_week_scores", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        main,
+        "fetch_week_scores",
+        lambda client, *_args, **_kwargs: captured_clients.append(client) or [],
+    )
     monkeypatch.setattr(main, "build_base_frame", lambda payload: payload)
     monkeypatch.setattr(main, "add_optimal_points", lambda base, _rules: base)
     monkeypatch.setattr(main, "compute_pir", lambda *_args, **_kwargs: {"leaderboard_df": _EmptyFrame()})
@@ -66,7 +61,8 @@ def test_env_overrides_yaml_for_league_and_season(monkeypatch, tmp_path):
 
     main.main()
 
-    assert captured_get["league_id"] == 999999
-    assert captured_get["season"] == 2035
+    assert captured_clients, "expected fetch_week_scores to receive a client"
+    assert captured_clients[0].league_id == 999999
+    assert captured_clients[0].season == 2035
     assert captured_preflight["league_id"] == 999999
     assert captured_preflight["season"] == 2035
