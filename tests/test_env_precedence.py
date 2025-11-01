@@ -15,8 +15,9 @@ class _EmptyFrame:
         return iter(())
 
 
-def test_league_id_env_precedence(monkeypatch):
+def test_env_overrides_yaml_for_league_and_season(monkeypatch, tmp_path):
     monkeypatch.setenv("LEAGUE_ID", "999999")
+    monkeypatch.setenv("SEASON", "2035")
 
     monkeypatch.setattr(
         main,
@@ -29,22 +30,34 @@ def test_league_id_env_precedence(monkeypatch):
         },
     )
 
+    monkeypatch.setattr(main, "LOCK_PATH", tmp_path / "lockfile")
+
     monkeypatch.setattr(
         main,
         "parse_args",
         lambda: argparse.Namespace(mode="pir", weeks="auto", dry_run=True),
     )
 
-    captured = {}
+    captured_get = {}
+    captured_preflight = {}
+
+    def fake_preflight(**kwargs):
+        captured_preflight.update(kwargs)
+        return {"status": "ok"}
 
     def fake_get_league(**kwargs):
-        captured.update(kwargs)
-        return object()
+        captured_get.update(kwargs)
 
+        class _League:
+            pass
+
+        return _League()
+
+    monkeypatch.setattr(main, "preflight_league", fake_preflight)
     monkeypatch.setattr(main, "get_league", fake_get_league)
-    monkeypatch.setattr(main, "extract_league_rules", lambda _league: {})
+    monkeypatch.setattr(main, "extract_league_rules", lambda _league: {"regular_season_weeks": 14})
     monkeypatch.setattr(main, "last_completed_week", lambda _league: 1)
-    monkeypatch.setattr(main, "get_weeks", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(main, "get_weeks", lambda *_args, **_kwargs: [1])
     monkeypatch.setattr(main, "fetch_week_scores", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(main, "build_base_frame", lambda payload: payload)
     monkeypatch.setattr(main, "add_optimal_points", lambda base, _rules: base)
@@ -53,4 +66,7 @@ def test_league_id_env_precedence(monkeypatch):
 
     main.main()
 
-    assert captured["league_id"] == 999999
+    assert captured_get["league_id"] == 999999
+    assert captured_get["season"] == 2035
+    assert captured_preflight["league_id"] == 999999
+    assert captured_preflight["season"] == 2035
