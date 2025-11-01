@@ -209,100 +209,78 @@ def fetch_teams(client: ESPNClient) -> Dict[str, Any]:
     return _json_get("", params={"view": "mTeam"}, cookies=cookies, retries=1)
 
 
-def build_member_display_map(settings_json: Dict[str, Any]) -> Dict[str, str]:
-    """
-    Return {memberId(GUID): displayName} from settings_json["members"].
-    If displayName missing, use first non-empty of (firstName + lastName), then alternateId, else GUID[:6].
-    """
-
-    members: Dict[str, str] = {}
-    for member in settings_json.get("members", []) or []:
-        member_id = (
-            member.get("memberId")
-            or member.get("id")
-            or member.get("userId")
-            or member.get("primaryOwner")
-        )
-        if not member_id:
+def build_member_display_map(settings_json: dict) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for m in settings_json.get("members", []):
+        mid = str(m.get("id") or m.get("memberId") or "")
+        if not mid:
             continue
-        guid = str(member_id)
-
-        display = str(member.get("displayName") or "").strip()
-        if not display:
-            first = str(member.get("firstName") or "").strip()
-            last = str(member.get("lastName") or "").strip()
-            full_name = f"{first} {last}".strip()
-            if full_name:
-                display = full_name
-        if not display:
-            alternate = str(member.get("alternateId") or "").strip()
-            if alternate:
-                display = alternate
-        if not display:
-            display = guid[:6]
-
-        members[guid] = display
-
-    return members
+        dn = (m.get("displayName") or "").strip()
+        fn = (m.get("firstName") or "").strip()
+        ln = (m.get("lastName") or "").strip()
+        alt = (m.get("alternateId") or "").strip()
+        if dn:
+            out[mid] = dn
+        elif fn or ln:
+            out[mid] = (f"{fn} {ln}").strip()
+        elif alt:
+            out[mid] = alt
+        else:
+            out[mid] = mid[:6].upper()
+    return out
 
 
 def build_team_label_map(
-    teams_json: Dict[str, Any],
-    settings_json: Dict[str, Any],
+    teams_json: dict,
+    member_map: dict[str, str],
     *,
     include_owner: bool = True,
-) -> Dict[int, str]:
+) -> dict[int, str]:
     """
-    Return {team_id: label}.
-    team_name = f"{location} {nickname}".strip(); if missing, fallback to abbrev, else f"Team {id}".
-    ownerId = first element of team['owners'] if present; map via member_display_map.
-    If include_owner and owner display exists, label = f"{team_name} ({owner_display})", else just team_name.
+    Build {team_id: 'Location Nickname (Owner)'} robustly from mTeam.
+    Priority:
+      1) f"{location} {nickname}".strip() if either exists
+      2) team.get('name')  (some leagues set a single name)
+      3) f"Team {id}"
+    Owner:
+      - Use first of team.get('owners', []) or team.get('primaryOwner')
+      - Map via member_map to a readable display
+    Never use 'abbrev' unless EVERYTHING else is missing.
     """
 
-    member_display_map = build_member_display_map(settings_json)
-    labels: Dict[int, str] = {}
-
-    for team in teams_json.get("teams", []) or []:
-        team_id_raw = team.get("teamId", team.get("id"))
-        if team_id_raw is None:
+    labels: dict[int, str] = {}
+    for t in teams_json.get("teams", []):
+        tid_raw = t.get("id") if t.get("id") is not None else t.get("teamId")
+        if tid_raw is None:
             continue
         try:
-            team_id = int(team_id_raw)
+            tid = int(tid_raw)
         except (TypeError, ValueError):
             continue
 
-        location = str(team.get("location") or "").strip()
-        nickname = str(team.get("nickname") or "").strip()
-        team_name = f"{location} {nickname}".strip()
-        if not team_name:
-            abbrev = str(team.get("abbrev") or "").strip()
-            team_name = abbrev or f"Team {team_id}"
+        loc = (t.get("location") or t.get("teamLocation") or "").strip()
+        nick = (t.get("nickname") or t.get("teamNickname") or "").strip()
+        name = (t.get("name") or "").strip()
+        owner_id = ""
+        owners = t.get("owners") or []
+        if isinstance(owners, list) and owners:
+            owner_id = str(owners[0])
+        if not owner_id:
+            owner_id = str(t.get("primaryOwner") or "")
+        owner_disp = member_map.get(owner_id, "").strip()
 
-        owner_display = ""
-        if include_owner:
-            owners = team.get("owners") or []
-            owner_entry: Any | None = owners[0] if owners else None
-            owner_identifier: Any | None = None
-            if isinstance(owner_entry, dict):
-                for key in ("memberId", "id", "ownerId", "userId", "primaryOwner"):
-                    value = owner_entry.get(key)
-                    if value:
-                        owner_identifier = value
-                        break
-            elif owner_entry is not None:
-                owner_identifier = owner_entry
-
-            if owner_identifier is None and team.get("primaryOwner") is not None:
-                owner_identifier = team.get("primaryOwner")
-
-            if owner_identifier is not None:
-                owner_display = member_display_map.get(str(owner_identifier), "")
-
-        if include_owner and owner_display:
-            labels[team_id] = f"{team_name} ({owner_display})"
+        if loc or nick:
+            base = f"{loc} {nick}".strip()
+        elif name:
+            base = name
         else:
-            labels[team_id] = team_name
+            base = f"Team {tid}"
 
+        label = base
+        if include_owner and owner_disp:
+            label = f"{base} ({owner_disp})"
+
+        labels[tid] = label
     return labels
 
 
