@@ -66,11 +66,13 @@ def test_price_is_right_tiebreaks():
             {"team_id": 3, "owner": "Cara", "week": 3, "points": 147.0, "bench_points": 20.0},
         ]
     )
+    labels = {1: "Alice", 2: "Bob", 3: "Cara"}
     result = compute_pir(
         df,
         target=150.0,
         tiebreaks=["earliest_week", "higher_bench", "alphabetical"],
         weeks_scope=[1, 2, 3],
+        labels=labels,
     )
     assert result["leader"]["owner"] == "Bob"
     leaderboard = result["leaderboard_df"]
@@ -102,7 +104,13 @@ def test_efficiency_tiebreak_chain():
             }
         )
     df = pd.DataFrame(rows)
-    result = season_efficiency(df, weeks=[1, 2, 3], tiebreaks=["higher_median", "higher_total_points", "alphabetical"])
+    labels = {1: "Alpha", 2: "Beta"}
+    result = season_efficiency(
+        df,
+        weeks=[1, 2, 3],
+        tiebreaks=["higher_median", "higher_total_points", "alphabetical"],
+        labels=labels,
+    )
     table = result["table"]
     assert table.iloc[0]["owner"] == "Beta"
     assert pytest.approx(table.iloc[0]["season_efficiency"], rel=1e-6) == pytest.approx(table.iloc[1]["season_efficiency"], rel=1e-6)
@@ -134,11 +142,13 @@ def test_survivor_elimination_with_tiebreaks():
         ]
     )
     df = pd.DataFrame(rows)
+    labels = {1: "Alpha", 2: "Bravo", 3: "Charlie"}
     result = run_survivor(
         df,
         start_week=2,
         tiebreaks=["lower_season_eff", "lower_total_points", "alphabetical"],
         weeks_scope=[1, 2, 3],
+        labels=labels,
     )
     eliminated = result["eliminated_order"]
     assert eliminated[0]["owner"] == "Charlie"
@@ -155,10 +165,12 @@ def test_survivor_handles_missing_weeks():
             {"team_id": 2, "owner": "Bravo", "week": 2, "points": 80.0, "optimal_points": 150.0, "efficiency": 0.533},
         ]
     )
+    labels = {1: "Alpha", 2: "Bravo"}
     result = run_survivor(
         df,
         start_week=2,
         tiebreaks=["lower_total_points", "alphabetical"],
         weeks_scope=[1, 2],
+        labels=labels,
     )
     assert result["eliminated_order"][0]["owner"] == "Alpha"

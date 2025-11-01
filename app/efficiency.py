@@ -33,8 +33,9 @@ def _apply_efficiency_tiebreaks(
 def season_efficiency(
     df: pd.DataFrame,
     weeks: List[int],
+    *,
     tiebreaks: List[str] | None = None,
-    labels: Dict[int, str] | None = None,
+    labels: Dict[int, str],
 ) -> Dict[str, Any]:
     """Aggregate weekly efficiency into season-long leaderboards."""
 
@@ -50,11 +51,9 @@ def season_efficiency(
         mean_efficiency=("efficiency", "mean"),
         median_efficiency=("efficiency", "median"),
     )
-    label_map = labels or {}
-    if labels:
-        grouped["owner"] = grouped["team_id"].apply(
-            lambda tid: label_for(int(tid), label_map)
-        )
+    grouped["owner"] = grouped["team_id"].apply(
+        lambda tid: label_for(int(tid), labels)
+    )
     grouped["season_efficiency"] = grouped["mean_efficiency"]
 
     ordered = _apply_efficiency_tiebreaks(

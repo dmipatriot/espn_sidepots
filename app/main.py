@@ -15,8 +15,10 @@ from app import discord
 from app.efficiency import season_efficiency
 from app.espn_client import (
     ESPNClient,
+    build_member_display_map,
     build_team_label_map,
     extract_league_rules,
+    fetch_settings,
     fetch_teams,
     fetch_week_scores,
     get_weeks,
@@ -196,15 +198,20 @@ def main() -> None:
         )
         LOGGER.info("[preflight] OK (JSON)")
 
-        rules = extract_league_rules(client)
+        settings_payload = fetch_settings(client)
+        teams_payload = fetch_teams(client)
+        members = build_member_display_map(settings_payload)
+        labels = build_team_label_map(
+            teams_payload,
+            settings_payload,
+            include_owner=True,
+        )
+        rules = extract_league_rules(client, settings_payload)
         regular_weeks = int(
             cfg.get("regular_season_weeks") or rules.get("regular_season_weeks") or 0
         )
         completed = last_completed_week(client)
         weeks = get_weeks(args.weeks, regular_weeks, last_completed=completed)
-
-        teams_payload = fetch_teams(client)
-        labels = build_team_label_map(teams_payload)
 
         payload: List[Dict[str, object]] = []
         for week in weeks:
