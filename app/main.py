@@ -5,14 +5,14 @@ import logging
 import os
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Dict, List
 
 import yaml
 
 from app import discord
-from app.efficiency import season_efficiency
+from app.efficiency import EffStat, format_efficiency_report, update_efficiency
 from app.espn_client import (
     ESPNClient,
     build_member_display_map,
@@ -67,17 +67,6 @@ def _format_pir_summary(result: Dict[str, object], labels: Dict[int, str]) -> Li
             f"Week {int(row['week'])}: {team_label} - {row['points']:.2f} (Δ {row['delta']:.2f})"
         )
     return lines or ["No qualifying scores"]
-
-
-def _format_efficiency_summary(result: Dict[str, object], labels: Dict[int, str]) -> List[str]:
-    table = result["table"].head(5)
-    lines = []
-    for _, row in table.iterrows():
-        team_label = label_for(int(row["team_id"]), labels)
-        lines.append(
-            f"{team_label}: {row['season_efficiency']:.3f} (Pts {row['total_points']:.1f})"
-        )
-    return lines or ["No efficiency data"]
 
 
 def _format_survivor_summary(
@@ -229,18 +218,42 @@ def main() -> None:
         weeks = get_weeks(args.weeks, regular_weeks, last_completed=lcw)
 
         payload: List[Dict[str, object]] = []
-        for week in weeks:
-            for team_score in fetch_week_scores(client, week):
-                payload.append(asdict(team_score))
-
-        base_df = build_base_frame(payload)
-        scoring_df = add_optimal_points(base_df, rules)
-
+        stats: Dict[int, EffStat] = {}
         modes = [args.mode] if args.mode != "all" else ["pir", "efficiency", "survivor"]
         weeks_label = _format_weeks_for_log(weeks)
+        need_payload = any(mode in modes for mode in ("pir", "survivor"))
+
+        for week in weeks:
+            week_scores = fetch_week_scores(client, week)
+            week_payload = [asdict(team_score) for team_score in week_scores]
+            if need_payload:
+                payload.extend(week_payload)
+
+            if "efficiency" in modes:
+                week_df = build_base_frame(week_payload)
+                optimal_map: Dict[int, float] = {}
+                if not week_df.empty:
+                    week_scored = add_optimal_points(week_df, rules)
+                    optimal_map = {
+                        int(row["team_id"]): float(row.get("optimal_points") or 0.0)
+                        for _, row in week_scored.iterrows()
+                    }
+                week_scores_with_optimal = [
+                    replace(score, optimal_points=optimal_map.get(score.team_id, 0.0))
+                    for score in week_scores
+                ]
+                update_efficiency(stats, week_scores_with_optimal)
+
+        scoring_df = None
+        if need_payload:
+            base_df = build_base_frame(payload)
+            scoring_df = add_optimal_points(base_df, rules)
 
         if "pir" in modes:
             LOGGER.info("Starting PIR report for weeks=%s", weeks_label)
+            if scoring_df is None:
+                base_df = build_base_frame([])
+                scoring_df = add_optimal_points(base_df, rules)
             pir_result = compute_pir(
                 scoring_df,
                 target=float(cfg.get("pir_target", 150.0)),
@@ -260,17 +273,13 @@ def main() -> None:
 
         if "efficiency" in modes:
             LOGGER.info("Starting efficiency report for weeks=%s", weeks_label)
-            eff_result = season_efficiency(
-                scoring_df,
-                weeks=weeks,
-                tiebreaks=list((cfg.get("tiebreaks") or {}).get("efficiency", [])),
-                labels=labels,
-            )
+            report_text = format_efficiency_report(labels, stats)
+            report_lines = report_text.splitlines()
             posted = _maybe_post(
                 cfg,
                 "efficiency",
                 "Season Efficiency",
-                _format_efficiency_summary(eff_result, labels),
+                report_lines,
                 args.dry_run,
             )
             if posted:
