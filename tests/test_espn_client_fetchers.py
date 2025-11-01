@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import sys
 from pathlib import Path
 
@@ -11,169 +10,128 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from app import espn_client
 
 
+class _FakePlayer:
+    def __init__(self, name: str, slot: str, points: float, position: str, eligible=None):
+        self.name = name
+        self.slot_position = slot
+        self.points = points
+        self.position = position
+        self.eligibleSlots = list(eligible or [position])
+
+
+class _FakeBoxScore:
+    def __init__(
+        self,
+        home_team: int,
+        home_score: float,
+        home_lineup,
+        away_team: int,
+        away_score: float,
+        away_lineup,
+    ) -> None:
+        self.home_team = home_team
+        self.home_score = home_score
+        self.home_lineup = home_lineup
+        self.away_team = away_team
+        self.away_score = away_score
+        self.away_lineup = away_lineup
+
+
+class _FakeTeam:
+    def __init__(self, team_id: int, owner: str, name: str) -> None:
+        self.team_id = team_id
+        self.owner = owner
+        self.team_name = name
+
+
+class _FakeLeague:
+    def __init__(self, teams, box_scores_by_week):
+        self.teams = teams
+        self._box_scores_by_week = box_scores_by_week
+
+    def box_scores(self, week):
+        return list(self._box_scores_by_week.get(week, []))
+
+
 @pytest.fixture()
-def sample_client() -> espn_client.ESPNClient:
-    return espn_client.ESPNClient(
-        league_id=123456,
-        season=2024,
-        espn_s2="s2",
-        swid="{SWID}",
+def sample_league():
+    qb1 = _FakePlayer("QB One", "QB", 25.0, "QB")
+    rb1 = _FakePlayer("RB One", "RB", 10.0, "RB")
+    flex1 = _FakePlayer("Flex WR", "RB/WR/TE", 5.0, "WR")
+    bench_star = _FakePlayer("Bench RB", "BE", 30.0, "RB")
+    bench_k = _FakePlayer("Bench K", "BN", 8.0, "K")
+
+    qb2 = _FakePlayer("QB Two", "QB", 15.0, "QB")
+    wr2 = _FakePlayer("WR Two", "WR", 20.0, "WR")
+    te2 = _FakePlayer("TE Two", "TE", 7.0, "TE")
+    op2 = _FakePlayer("Super Flex", "OP", 2.0, "RB")
+    bench_qb = _FakePlayer("Bench QB", "BE", 25.0, "QB")
+    bench_wr = _FakePlayer("Bench WR", "BE", 12.0, "WR")
+
+    box = _FakeBoxScore(
+        home_team=1,
+        home_score=40.0,
+        home_lineup=[qb1, rb1, flex1, bench_star, bench_k],
+        away_team=2,
+        away_score=44.0,
+        away_lineup=[qb2, wr2, te2, op2, bench_qb, bench_wr],
     )
 
+    teams = [_FakeTeam(1, "Owner One", "Alpha Squad"), _FakeTeam(2, "Owner Two", "Beta Crew")]
+    return _FakeLeague(teams, {2: [box]})
 
-@pytest.fixture()
-def canned_payloads():
-    settings = {
-        "status": {"latestScoringPeriod": 3},
-        "settings": {
-            "scheduleSettings": {"matchupPeriodCount": 14},
-            "rosterSettings": {"lineupSlotCounts": {"0": 1, "2": 2, "20": 7}},
-        },
-    }
 
-    teams = {
-        "teams": [
-            {
-                "id": 1,
-                "teamId": 1,
-                "location": "Alpha",
-                "nickname": "Squad",
-                "owners": [{"displayName": "Owner One"}],
+def test_fetch_week_scores_from_boxscores(sample_league):
+    scores = espn_client.fetch_week_scores(sample_league, week=2)
+
+    assert len(scores) == 2
+    team_lookup = {score.team_id: score for score in scores}
+
+    team1 = team_lookup[1]
+    assert team1.owner == "Owner One"
+    assert pytest.approx(team1.points, rel=1e-6) == 40.0
+    assert pytest.approx(team1.bench_points, rel=1e-6) == 38.0
+    assert team1.optimal_points > team1.points
+    assert team1.roster and len(team1.roster) == 5
+
+    team2 = team_lookup[2]
+    assert team2.owner == "Owner Two"
+    assert pytest.approx(team2.points, rel=1e-6) == 44.0
+    assert pytest.approx(team2.bench_points, rel=1e-6) == 37.0
+    assert team2.optimal_points > team2.points
+    assert team2.roster and len(team2.roster) == 6
+
+
+def test_last_completed_week_respects_settings():
+    client = espn_client.ESPNClient(league_id=1, season=2024, espn_s2="s", swid="{S}")
+    monkeypatched = {}
+
+    def _fake_fetch_settings(_client):
+        return {
+            "status": {"latestScoringPeriod": 3},
+            "settings": {
+                "scheduleSettings": {"matchupPeriodCount": 5},
             },
-            {
-                "id": 2,
-                "teamId": 2,
-                "location": "Beta",
-                "nickname": "Crew",
-                "owners": [{"displayName": "Owner Two"}],
-            },
-        ]
-    }
+        }
 
-    matchups = {}
-    for week in range(1, 6):
-        matchups[week] = {
+    def _fake_fetch_week_matchups(_client, week):
+        monkeypatched[week] = True
+        winner = "HOME" if week <= 3 else "UNDECIDED"
+        return {
             "scoringPeriodId": week,
             "schedule": [
-                {
-                    "id": 70 + week,
-                    "matchupPeriodId": week,
-                    "home": {"teamId": 1, "totalPoints": 120.5},
-                    "away": {"teamId": 2, "totalPoints": 98.3},
-                    "winner": "HOME" if week <= 3 else "UNDECIDED",
-                }
+                {"matchupPeriodId": week, "home": {"teamId": 1}, "away": {"teamId": 2}, "winner": winner}
             ],
         }
 
-    rosters = {
-        2: {
-            "teams": [
-                {
-                    "teamId": 1,
-                    "roster": {
-                        "entries": [
-                            {
-                                "lineupSlotId": 0,
-                                "appliedStatTotal": 20.1,
-                                "playerPoolEntry": {
-                                    "player": {
-                                        "fullName": "Player Alpha",
-                                        "defaultPositionId": 1,
-                                        "eligibleSlots": [0, 20],
-                                    }
-                                },
-                            },
-                            {
-                                "lineupSlotId": 20,
-                                "appliedStatTotal": 5.0,
-                                "playerPoolEntry": {
-                                    "player": {
-                                        "fullName": "Bench Alpha",
-                                        "defaultPositionId": 2,
-                                        "eligibleSlots": [2, 20],
-                                    }
-                                },
-                            },
-                        ]
-                    },
-                },
-                {
-                    "teamId": 2,
-                    "roster": {
-                        "entries": [
-                            {
-                                "lineupSlotId": 2,
-                                "appliedStatTotal": 15.6,
-                                "playerPoolEntry": {
-                                    "player": {
-                                        "fullName": "Player Beta",
-                                        "defaultPositionId": 3,
-                                        "eligibleSlots": [2, 20],
-                                    }
-                                },
-                            },
-                            {
-                                "lineupSlotId": 20,
-                                "appliedStatTotal": 8.2,
-                                "playerPoolEntry": {
-                                    "player": {
-                                        "fullName": "Bench Beta",
-                                        "defaultPositionId": 4,
-                                        "eligibleSlots": [4, 20],
-                                    }
-                                },
-                            },
-                        ]
-                    },
-                },
-            ]
-        }
-    }
+    original_fetch_settings = espn_client.fetch_settings
+    original_fetch_week_matchups = espn_client.fetch_week_matchups
+    try:
+        espn_client.fetch_settings = _fake_fetch_settings
+        espn_client.fetch_week_matchups = _fake_fetch_week_matchups
+        latest = espn_client.last_completed_week(client, start_week=1)
+    finally:
+        espn_client.fetch_settings = original_fetch_settings
+        espn_client.fetch_week_matchups = original_fetch_week_matchups
 
-    return {
-        "mSettings": settings,
-        "mTeam": teams,
-        "mMatchup": matchups,
-        "mRoster": rosters,
-    }
-
-
-@pytest.fixture(autouse=True)
-def stub_json_get(monkeypatch, canned_payloads):
-    def _fake_json_get(path, params, cookies, *, retries=1):
-        view = params.get("view")
-        if view == "mMatchup":
-            week = int(params.get("scoringPeriodId"))
-            payload = canned_payloads[view].get(week, {"scoringPeriodId": week, "schedule": []})
-            return copy.deepcopy(payload)
-        if view == "mRoster":
-            week = int(params.get("scoringPeriodId"))
-            return copy.deepcopy(canned_payloads[view][week])
-        return copy.deepcopy(canned_payloads[view])
-
-    monkeypatch.setattr(espn_client, "_json_get", _fake_json_get)
-
-
-def test_fetch_week_scores_uses_first_party_http(sample_client):
-    scores = espn_client.fetch_week_scores(sample_client, week=2)
-
-    assert len(scores) == 2
-
-    for score in scores:
-        assert score.week == 2
-        assert score.points > 0
-        assert score.owner.startswith("Owner")
-        assert score.roster
-        assert score.optimal_points >= score.points
-
-    team_ids = {score.team_id for score in scores}
-    assert team_ids == {1, 2}
-
-    bench_lookup = {score.team_id: score.bench_points for score in scores}
-    assert pytest.approx(bench_lookup[1], rel=1e-6) == 5.0
-    assert pytest.approx(bench_lookup[2], rel=1e-6) == 8.2
-
-
-def test_last_completed_week_respects_settings(sample_client):
-    latest = espn_client.last_completed_week(sample_client, start_week=1)
     assert latest == 3

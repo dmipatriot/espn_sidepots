@@ -11,8 +11,15 @@ import logging
 import requests
 
 from espn_api.football.constant import POSITION_MAP
+from espn_api.football import League
 
-from app.scoring import compute_optimal_points
+from app.espn_lineup import (
+    STARTER_EXCLUDES,
+    build_slot_plan_from_lineup,
+    compute_optimal_with_assignment,
+    sum_points_for_slots,
+    _pos,
+)
 
 _DEFAULT_HEADERS = {
     "User-Agent": (
@@ -78,9 +85,6 @@ def _sanitize_body(body: str | None) -> str:
         return ""
     compact = " ".join(body.split())
     return compact[:200]
-
-
-BENCH_SLOTS = {"BE", "BN", "IR", "TAXI"}
 
 
 def _ensure_browser_user_agent() -> None:
@@ -200,6 +204,17 @@ def _apply_client_context(client: ESPNClient) -> Dict[str, str]:
     _set_league_context(client.league_id, client.season)
     _ensure_browser_user_agent()
     return {"SWID": client.swid, "espn_s2": client.espn_s2}
+
+
+def init_league(client: ESPNClient) -> League:
+    """Instantiate an espn_api League using the client credentials."""
+
+    return League(
+        league_id=int(client.league_id),
+        year=int(client.season),
+        espn_s2=client.espn_s2,
+        swid=client.swid,
+    )
 
 
 def fetch_settings(client: ESPNClient) -> Dict[str, Any]:
@@ -384,156 +399,95 @@ def get_weeks(
 
 
 def fetch_week_scores(
-    client: ESPNClient,
+    league,
     week: int,
-    *,
-    league_rules: Dict[str, Any] | None = None,
 ) -> List[TeamWeekScore]:
-    """Return per-team scoring for a specific week using ESPN JSON endpoints."""
+    """Return per-team scoring for a specific week using lineup assignments."""
 
-    teams_payload = fetch_teams(client)
-    matchups_payload = fetch_week_matchups(client, week)
-    rosters_payload = fetch_week_rosters(client, week)
-    rules = league_rules or {}
+    try:
+        team_map = {team.team_id: team for team in getattr(league, "teams", [])}
+    except Exception:  # pragma: no cover - defensive, shouldn't happen in tests
+        team_map = {}
 
-    teams_by_id: Dict[int, Dict[str, Any]] = {}
-    for team in teams_payload.get("teams", []) or []:
-        team_id = team.get("teamId", team.get("id"))
-        if team_id is None:
-            continue
-        teams_by_id[int(team_id)] = team
+    box_scores = league.box_scores(week)
+    aggregated: Dict[int, Dict[str, Any]] = {}
 
-    roster_by_team: Dict[int, List[Dict[str, Any]]] = {}
-    for roster_team in rosters_payload.get("teams", []) or []:
-        team_id = roster_team.get("teamId", roster_team.get("id"))
-        if team_id is None:
-            continue
-        entries = roster_team.get("roster", {}).get("entries", []) or []
-        normalized_entries: List[Dict[str, Any]] = []
-        for entry in entries:
-            slot_id = entry.get("lineupSlotId")
-            slot_name = POSITION_MAP.get(int(slot_id)) if slot_id is not None else None
-            if slot_name is None:
-                slot_name = str(slot_id)
-
-            player_entry = entry.get("playerPoolEntry", {}) or {}
-            player = player_entry.get("player", {}) or {}
-            player_name = (
-                player.get("fullName")
-                or player.get("displayName")
-                or player.get("firstName")
-                or "Unknown"
-            )
-
-            eligible_raw = player.get("eligibleSlots") or player.get("eligiblePositions") or []
-            eligible_slots = [
-                POSITION_MAP.get(int(slot), str(slot)) for slot in eligible_raw
-            ]
-
-            position_id = player.get("defaultPositionId")
-            position_name = (
-                POSITION_MAP.get(int(position_id), str(position_id))
-                if position_id is not None
-                else slot_name
-            )
-
-            points_candidates = [
-                entry.get("appliedStatTotal"),
-                player_entry.get("appliedStatTotal"),
-                entry.get("points"),
-            ]
-            points_value = 0.0
-            for candidate in points_candidates:
-                if candidate is not None:
-                    points_value = float(candidate)
-                    break
-
-            normalized_entries.append(
-                {
-                    "name": player_name,
-                    "points": points_value,
-                    "slot": slot_name,
-                    "eligible_slots": eligible_slots,
-                    "position": position_name,
-                }
-            )
-        roster_by_team[int(team_id)] = normalized_entries
-
-    def _resolve_owner(team_id: int) -> str:
-        team = teams_by_id.get(team_id, {})
-        owners = team.get("owners") or []
-        owner_display = ""
-        if owners:
-            owner = owners[0]
-            if isinstance(owner, dict):
-                owner_display = (
-                    owner.get("displayName")
-                    or " ".join(
-                        part for part in [owner.get("firstName"), owner.get("lastName")] if part
-                    )
-                )
-            else:
-                owner_display = str(owner)
-
-        if owner_display:
-            return owner_display
-
-        location = team.get("location", "").strip()
-        nickname = team.get("nickname", "").strip()
-        if location or nickname:
-            return f"{location} {nickname}".strip()
-
-        return f"Team {team_id}"
-
-    results: List[TeamWeekScore] = []
-    seen: Set[int] = set()
-    for matchup in matchups_payload.get("schedule", []) or []:
-        matchup_week = int(matchup.get("matchupPeriodId", week) or week)
-        if matchup_week != int(week):
-            continue
+    for box in box_scores:
         for side in ("home", "away"):
-            team_info = matchup.get(side)
-            if not team_info:
-                continue
-            team_id = team_info.get("teamId")
+            team_id = getattr(box, f"{side}_team", None)
             if team_id is None:
                 continue
-            team_id = int(team_id)
-            if team_id in seen:
+            try:
+                team_key = int(team_id)
+            except (TypeError, ValueError):
                 continue
-            seen.add(team_id)
-            points = float(
-                team_info.get("totalPoints")
-                or team_info.get("points", 0.0)
-                or 0.0
-            )
-            roster = roster_by_team.get(team_id)
-            bench_points: float | None = None
-            if roster is not None:
-                bench_points = sum(
-                    entry["points"] for entry in roster if entry["slot"] in BENCH_SLOTS
-                )
 
-            optimal_points = compute_optimal_points(
-                roster or [],
-                rules,
-                actual_points=points,
+            lineup = list(getattr(box, f"{side}_lineup", []) or [])
+            score = float(getattr(box, f"{side}_score", 0.0) or 0.0)
+            record = aggregated.setdefault(
+                team_key,
+                {"players": [], "score": score, "seen_ids": set()},
+            )
+            record["score"] = score
+
+            seen_ids: Set[int] = record.setdefault("seen_ids", set())
+            for player in lineup:
+                pid = id(player)
+                if pid in seen_ids:
+                    continue
+                seen_ids.add(pid)
+                record["players"].append(player)
+
+    results: List[TeamWeekScore] = []
+    for team_id, record in aggregated.items():
+        players = record.get("players", [])
+        starter_labels = {
+            str(getattr(player, "slot_position", "") or "").upper()
+            for player in players
+            if str(getattr(player, "slot_position", "") or "").upper()
+            and str(getattr(player, "slot_position", "") or "").upper() not in STARTER_EXCLUDES
+        }
+        actual_points = sum_points_for_slots(players, starter_labels)
+        fixed, flex = build_slot_plan_from_lineup(players)
+        optimal_points, _ = compute_optimal_with_assignment(players, fixed, flex)
+        bench_points = sum_points_for_slots(players, STARTER_EXCLUDES)
+
+        roster: List[Dict[str, Any]] = []
+        for player in players:
+            roster.append(
+                {
+                    "name": getattr(player, "name", ""),
+                    "points": float(getattr(player, "points", 0.0) or 0.0),
+                    "slot": str(getattr(player, "slot_position", "") or ""),
+                    "eligible_slots": list(getattr(player, "eligibleSlots", []) or []),
+                    "position": _pos(
+                        getattr(player, "position", None)
+                        or getattr(player, "slot_position", "")
+                    ),
+                }
             )
 
-            results.append(
-                TeamWeekScore(
-                    team_id=team_id,
-                    owner=_resolve_owner(team_id),
-                    week=int(week),
-                    points=points,
-                    bench_points=bench_points,
-                    roster=roster,
-                    raw={"matchup_id": matchup.get("id"), "side": side},
-                    optimal_points=optimal_points,
-                )
-            )
+        owner = ""
+        team = team_map.get(team_id)
+        if team is not None:
+            owner = getattr(team, "owner", "") or getattr(team, "team_name", "")
+        if not owner:
+            owner = f"Team {team_id}"
 
-    return results
+        results.append(
+            TeamWeekScore(
+                team_id=team_id,
+                owner=owner,
+                week=int(week),
+                points=float(actual_points or 0.0),
+                bench_points=float(bench_points) if bench_points is not None else None,
+                roster=roster,
+                raw={"score": record.get("score", 0.0)},
+                optimal_points=float(optimal_points or 0.0),
+            )
+        )
+
+    return sorted(results, key=lambda item: item.team_id)
 
 
 def last_completed_week(

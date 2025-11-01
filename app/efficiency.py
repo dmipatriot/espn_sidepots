@@ -20,7 +20,7 @@ def update_efficiency(
     stats: Dict[int, EffStat],
     week_scores: List["TeamWeekScore"],
     *,
-    dedupe_seen: Set[Tuple[int, int]],
+    seen: Set[Tuple[int, int]],
 ) -> None:
     """
     Accumulate per-week actual/optimal per team. Enforce exactly one record per (team_id, week).
@@ -29,9 +29,9 @@ def update_efficiency(
 
     for score in week_scores:
         key = (int(score.team_id), int(score.week))
-        if key in dedupe_seen:
+        if key in seen:
             continue
-        dedupe_seen.add(key)
+        seen.add(key)
 
         entry = stats.setdefault(score.team_id, EffStat(team_id=score.team_id))
         entry.actual_sum += float(score.points or 0.0)
