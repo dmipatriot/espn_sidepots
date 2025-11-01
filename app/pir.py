@@ -35,10 +35,11 @@ def _apply_tiebreaks(
 
 def compute_pir(
     df: pd.DataFrame,
+    *,
     target: float = 150.0,
     tiebreaks: List[str] | None = None,
     weeks_scope: List[int] | None = None,
-    labels: Dict[int, str] | None = None,
+    labels: Dict[int, str],
 ) -> Dict[str, Any]:
     """Return Price-Is-Right results constrained to the supplied week scope."""
 
@@ -47,9 +48,7 @@ def compute_pir(
         working = working[working["week"].isin(weeks_scope)]
 
     working = working[["team_id", "owner", "week", "points", "bench_points"]].copy()
-    label_map = labels or {}
-    if labels:
-        working["owner"] = working["team_id"].apply(lambda tid: label_for(int(tid), label_map))
+    working["owner"] = working["team_id"].apply(lambda tid: label_for(int(tid), labels))
     working["bench_points"] = working["bench_points"].fillna(0.0)
     working["delta"] = target - working["points"]
     candidates = working[working["delta"] >= 0].copy()
@@ -60,9 +59,7 @@ def compute_pir(
     leader_info: Dict[str, Any] | None = None
     if not leaderboard.empty:
         top = leaderboard.iloc[0]
-        owner_display = str(top["owner"])
-        if labels:
-            owner_display = label_for(int(top["team_id"]), label_map)
+        owner_display = label_for(int(top["team_id"]), labels)
 
         leader_info = {
             "team_id": int(top["team_id"]),

@@ -49,10 +49,11 @@ def _resolve_tiebreak(
 
 def run_survivor(
     df: pd.DataFrame,
+    *,
     start_week: int = 3,
     tiebreaks: List[str] | None = None,
     weeks_scope: List[int] | None = None,
-    labels: Dict[int, str] | None = None,
+    labels: Dict[int, str],
 ) -> Dict[str, Any]:
     """Simulate a season-long survivor pool with deterministic tie handling."""
 
@@ -62,17 +63,9 @@ def run_survivor(
         weeks = sorted({int(week) for week in df["week"].unique()})
 
     teams = sorted({int(team_id) for team_id in df["team_id"].unique()})
-    label_map = labels or {}
-    fallback_owner_map = {
-        int(row["team_id"]): str(row["owner"])
-        for _, row in df.drop_duplicates("team_id").iterrows()
+    owner_map: Dict[int, str] = {
+        team: label_for(team, labels) for team in teams
     }
-    owner_map: Dict[int, str] = {}
-    for team in teams:
-        if team in label_map and label_map[team]:
-            owner_map[team] = label_map[team]
-        else:
-            owner_map[team] = fallback_owner_map.get(team, label_for(team, {}))
 
     cumulative_eff: Dict[int, List[float]] = {team: [] for team in teams}
     cumulative_points: Dict[int, float] = {team: 0.0 for team in teams}
@@ -117,13 +110,13 @@ def run_survivor(
             {
                 "week": week,
                 "team_id": loser,
-                "owner": owner_map.get(loser, ""),
+                "owner": owner_map.get(loser, label_for(loser, labels)),
                 "points": alive_scores.get(loser, 0.0),
             }
         )
 
     summary = [
-        f"Week {item['week']}: {item['owner']} eliminated ({item['points']:.2f})"
+        f"Week {item['week']}: {label_for(int(item['team_id']), labels)} eliminated ({item['points']:.2f})"
         for item in eliminated
     ]
 
