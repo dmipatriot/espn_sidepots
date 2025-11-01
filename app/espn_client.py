@@ -1,4 +1,5 @@
 from __future__ import annotations
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List
 
@@ -7,10 +8,14 @@ import requests
 from espn_api.football.constant import POSITION_MAP
 from espn_api.football.league import League
 
-BROWSER_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-)
+JSON_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+    "Referer": "https://fantasy.espn.com/",
+}
 
 BENCH_SLOTS = {"BE", "BN", "IR", "TAXI"}
 
@@ -18,29 +23,77 @@ BENCH_SLOTS = {"BE", "BN", "IR", "TAXI"}
 def _ensure_browser_user_agent() -> None:
     """Force requests to report a desktop browser user agent."""
 
-    requests.utils.default_user_agent = lambda: BROWSER_USER_AGENT
+    requests.utils.default_user_agent = lambda: JSON_HEADERS["User-Agent"]
 
 
-def _preflight_league_request(league_id: int, season: int, espn_s2: str, swid: str) -> None:
-    """Perform a preflight GET request to detect ESPN 403s early."""
+def _json_get(url: str, params: Dict[str, Any], cookies: Dict[str, str], *, retries: int = 1) -> Dict[str, Any]:
+    """Fetch JSON from ESPN with retry and response validation."""
+
+    attempts = max(1, int(retries) + 1)
+    last_response: requests.Response | None = None
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                cookies=cookies,
+                headers=JSON_HEADERS,
+                timeout=20,
+            )
+        except requests.RequestException as exc:  # pragma: no cover - network failure edge
+            last_response = None
+            last_error = exc
+        else:
+            last_response = response
+            content_type = response.headers.get("Content-Type", "").lower()
+            if response.status_code == 200 and "json" in content_type:
+                try:
+                    return response.json()
+                except ValueError as exc:
+                    last_error = exc
+                else:  # pragma: no cover - defensive
+                    last_error = RuntimeError("Unknown JSON error")
+            else:
+                last_error = RuntimeError(
+                    f"Unexpected response (status={response.status_code}, content_type='{content_type}')"
+                )
+
+        if attempt < attempts - 1:
+            time.sleep(0.8)
+            continue
+
+        break
+
+    if last_response is not None:
+        body = (last_response.text or "")[:200]
+        raise RuntimeError(
+            f"ESPN API request failed ({last_response.status_code}): {body}"
+        ) from last_error
+
+    raise RuntimeError(f"ESPN API request failed: {last_error}") from last_error
+
+
+def preflight_league(league_id: int, season: int, espn_s2: str, swid: str) -> Dict[str, Any]:
+    """Ensure ESPN league access returns JSON before using ``espn_api``."""
 
     url = (
         "https://fantasy.espn.com/apis/v3/games/ffl/seasons/"
         f"{season}/segments/0/leagues/{league_id}"
     )
-    response = requests.get(
-        url,
-        params={"view": "mSettings"},
-        cookies={"SWID": swid, "espn_s2": espn_s2},
-        headers={"User-Agent": BROWSER_USER_AGENT},
-        timeout=20,
-    )
-    if response.status_code != 200:
-        msg = (
-            "ESPN league preflight failed with status "
-            f"{response.status_code}: {response.text.strip()}"
+    try:
+        return _json_get(
+            url,
+            params={"view": "mSettings"},
+            cookies={"SWID": swid, "espn_s2": espn_s2},
+            retries=1,
         )
-        raise RuntimeError(msg)
+    except RuntimeError as exc:  # pragma: no cover - exercised in callers
+        msg = (
+            "ESPN league preflight failed. Verify LEAGUE_ID/SEASON and cookie secrets "
+            "(SWID must include braces, ESPN_S2 must be current)."
+        )
+        raise RuntimeError(f"{msg} Details: {exc}") from exc
 
 @dataclass(frozen=True)
 class TeamWeekScore:
@@ -56,7 +109,6 @@ def get_league(league_id: int, season: int, espn_s2: str, swid: str):
     """Instantiate and return an ``espn_api.football.League`` object."""
 
     _ensure_browser_user_agent()
-    _preflight_league_request(league_id, season, espn_s2, swid)
 
     return League(
         league_id=league_id,
