@@ -5,7 +5,6 @@ import logging
 import os
 import sys
 import time
-from json import JSONDecodeError
 from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
@@ -23,7 +22,6 @@ from app.espn_client import (
     fetch_teams,
     fetch_week_scores,
     get_weeks,
-    init_league,
     label_for,
     last_completed_week,
     preflight_league,
@@ -216,18 +214,6 @@ def main() -> None:
         regular_weeks = int(
             cfg.get("regular_season_weeks") or rules.get("regular_season_weeks") or 0
         )
-        try:
-            league = init_league(client)
-        except (RuntimeError, JSONDecodeError):
-            LOGGER.warning("Transient ESPN non-JSON; will retry once after 2s")
-            time.sleep(2)
-            try:
-                league = init_league(client)
-            except (RuntimeError, JSONDecodeError):
-                LOGGER.error(
-                    "Failed to initialize ESPN league after retry; check prior status/snippet diagnostics."
-                )
-                sys.exit(1)
         lcw = last_completed_week(client, start_week=1)
         weeks = get_weeks(args.weeks, regular_weeks, last_completed=lcw)
 
@@ -241,7 +227,7 @@ def main() -> None:
         need_payload = any(mode in modes for mode in ("pir", "survivor"))
 
         for week in weeks:
-            week_scores = fetch_week_scores(league, week)
+            week_scores = fetch_week_scores(client, week)
             week_payload = [asdict(team_score) for team_score in week_scores]
             if need_payload:
                 payload.extend(week_payload)
